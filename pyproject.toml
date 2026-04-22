@@ -1,0 +1,48 @@
+[project]
+name = "stock-data"
+version = "0.1.0"
+description = "KOSPI+KOSDAQ daily/minute price collector with TimescaleDB"
+requires-python = ">=3.11"
+dependencies = [
+    # Database
+    "sqlalchemy>=2.0.30",
+    "psycopg[binary]>=3.2.0",
+    "alembic>=1.13.0",
+    # Data sources
+    "pykrx>=1.0.45",
+    "FinanceDataReader>=0.9.90",
+    # HTTP client for KIS API (later)
+    "httpx>=0.27.0",
+    # Data manipulation
+    "pandas>=2.2.0",
+    "polars>=1.0.0",
+    "pyarrow>=16.0.0",
+    # Utilities
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+    "loguru>=0.7.0",
+    "tenacity>=8.3.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.1",
+    "tqdm>=4.66.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.4.0",
+    "ipykernel>=6.29.0",
+    "jupyter>=1.0.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

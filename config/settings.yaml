@@ -1,0 +1,28 @@
+collection:
+  daily:
+    # 백필 기간 (오늘부터 몇 일 전까지)
+    backfill_days: 400  # 1년 + 여유분
+    # KRX 요청 간 딜레이 (초)
+    request_delay: 0.3
+    # 실패 시 재시도
+    max_retries: 3
+    retry_delay: 2.0
+
+  minute:
+    # KIS API 호출 간격 (초) — rate limit 대응
+    request_delay: 0.15
+    max_retries: 3
+    retry_delay: 1.5
+    # 우선순위별 종목 수
+    tier1_count: 300   # KOSPI200 + 대형주
+    tier2_count: 1000  # 중형주
+    # tier3: 나머지 전 종목
+
+markets:
+  - KOSPI
+  - KOSDAQ
+
+# 제외할 종목 패턴 (스팩, 우선주, ETN 등)
+exclude_patterns:
+  - "스팩"
+  - "기업인수목적"

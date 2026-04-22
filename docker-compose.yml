@@ -1,0 +1,27 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: stock_timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-stockdata}
+      POSTGRES_USER: ${DB_USER:-stock}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      TZ: Asia/Seoul
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - ./data/pgdata:/var/lib/postgresql/data
+    command: >
+      postgres
+      -c shared_buffers=1GB
+      -c work_mem=64MB
+      -c maintenance_work_mem=256MB
+      -c effective_cache_size=3GB
+      -c max_connections=100
+      -c timescaledb.max_background_workers=8
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-stock} -d ${DB_NAME:-stockdata}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
