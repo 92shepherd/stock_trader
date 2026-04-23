@@ -1,5 +1,5 @@
 [project]
-name = "stock-data"
+name = "stock-trader"
 version = "0.1.0"
 description = "KOSPI+KOSDAQ daily/minute price collector with TimescaleDB"
 requires-python = ">=3.11"
@@ -7,22 +7,17 @@ dependencies = [
     # Database
     "sqlalchemy>=2.0.30",
     "psycopg[binary]>=3.2.0",
-    "alembic>=1.13.0",
     # Data sources
     "pykrx>=1.0.45",
-    "FinanceDataReader>=0.9.90",
-    # HTTP client for KIS API (later)
+    # HTTP client for KIS API (kis/ module — planned)
     "httpx>=0.27.0",
     # Data manipulation
     "pandas>=2.2.0",
-    "polars>=1.0.0",
-    "pyarrow>=16.0.0",
-    # Utilities
+    # Config & utilities
     "pydantic>=2.7.0",
     "pydantic-settings>=2.3.0",
     "loguru>=0.7.0",
     "tenacity>=8.3.0",
-    "python-dotenv>=1.0.0",
     "pyyaml>=6.0.1",
     "tqdm>=4.66.0",
 ]
@@ -32,8 +27,25 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "ruff>=0.4.0",
+    # VS Code에서 .ipynb 실행에는 ipykernel만 있으면 충분
+    # jupyter lab GUI가 필요하면 "jupyterlab>=4.0.0" 추가 (단, Windows에서 긴경로 활성화 필요)
     "ipykernel>=6.29.0",
-    "jupyter>=1.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# 코드가 `from src.db...` 형태로 import하므로 `src`를 패키지 루트로 명시.
+# (src-layout의 표준 방식이 아니라, 프로젝트가 실제로 src를 네임스페이스처럼 쓰고 있음)
+packages = [
+    "src",
+    "src.collectors",
+    "src.db",
+    "src.kis",
+    "src.pipelines",
+    "src.utils",
 ]
 
 [tool.ruff]
