@@ -88,6 +88,60 @@ def upsert_daily_prices(df: pd.DataFrame) -> int:
     return affected
 
 
+def query_daily_with_names(
+    symbols: list[str] | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    markets: list[str] | None = None,
+    limit: int | None = None,
+) -> pd.DataFrame:
+    """Query v_daily_prices (daily_prices joined with tickers).
+
+    Returns a pandas DataFrame with ticker name/sector/market alongside
+    the OHLCV row — convenient for ad-hoc analysis where you want to see
+    "삼성전자" instead of just "005930".
+
+    Args:
+        symbols: filter to these symbols. None = all.
+        start: inclusive lower bound on date. None = no lower bound.
+        end: inclusive upper bound on date. None = no upper bound.
+        markets: filter to these markets (e.g. ["KOSPI"]). None = all.
+        limit: optional LIMIT. Results are ordered by (date DESC, symbol).
+
+    Example:
+        df = query_daily_with_names(
+            symbols=["005930", "000660"],
+            start=date(2025, 1, 1),
+        )
+        # df.columns: symbol, name, market, sector, industry, date, open, ...
+    """
+    where = []
+    params: dict = {}
+    if symbols:
+        where.append("symbol = ANY(:symbols)")
+        params["symbols"] = list(symbols)
+    if start is not None:
+        where.append("date >= :start")
+        params["start"] = start
+    if end is not None:
+        where.append("date <= :end")
+        params["end"] = end
+    if markets:
+        where.append("market = ANY(:markets)")
+        params["markets"] = list(markets)
+
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    limit_sql = f"LIMIT {int(limit)}" if limit else ""
+
+    sql = text(
+        f"SELECT * FROM v_daily_prices {where_sql} "
+        f"ORDER BY date DESC, symbol {limit_sql}"
+    )
+
+    with raw_connection() as conn:
+        return pd.read_sql(sql, conn, params=params)
+
+
 # -------------------- Minute prices --------------------
 
 MINUTE_COLUMNS = ["symbol", "ts", "open", "high", "low", "close", "volume", "value"]
@@ -164,6 +218,53 @@ def get_last_successful_date(collector: str, symbol: str | None = None) -> date 
         """)
         row = session.execute(stmt, {"col": collector, "sym": symbol}).first()
         return row[0] if row and row[0] else None
+
+
+def get_completed_symbols_in_range(
+    collector: str,
+    start: date,
+    end: date,
+) -> set[str]:
+    """Return the set of symbols that have a 'success' log entry whose
+    target_date == `end` AND rows_inserted > 0 for the given collector.
+
+    Used by symbol-iterating collectors (e.g. daily_fdr) to skip symbols
+    that already finished a [start, end] backfill in a prior run, so the
+    backfill is resumable.
+
+    Why target_date == end?
+        Symbol-iterating backfills don't process a list of dates — they
+        process one (symbol, range) at a time and write a single log row
+        per symbol. We use the range's end date as the canonical marker
+        for "this (symbol, range) is done". Caller is responsible for
+        passing the same `end` it used when writing the success log.
+
+    Args:
+        collector: e.g. "daily_fdr".
+        start: start of the backfill range (kept for symmetry; not used
+               in the query — see note above).
+        end: the range's end date, which is what `backfill_symbols`
+             writes to `target_date` on success.
+
+    Returns:
+        Set of symbol strings already completed.
+    """
+    _ = start  # not used directly; preserved for API symmetry/future use
+    with session_scope() as session:
+        stmt = text("""
+            SELECT DISTINCT symbol
+              FROM collection_log
+             WHERE collector = :col
+               AND status    = 'success'
+               AND target_date = :end_date
+               AND symbol IS NOT NULL
+               AND rows_inserted > 0
+        """)
+        return {
+            r[0] for r in session.execute(
+                stmt, {"col": collector, "end_date": end}
+            ).all()
+        }
 
 
 def get_missing_dates(

@@ -1,16 +1,26 @@
 """CLI entry point for daily price collection.
 
 Usage:
-    # Backfill 400 calendar days (default)
+    # Backfill 400 calendar days (default) — skips dates already collected
     python -m src.pipelines.collect_daily
 
     # Specific range
     python -m src.pipelines.collect_daily --start 2024-04-21 --end 2025-04-21
 
+    # Force re-collection even for dates already marked success
+    python -m src.pipelines.collect_daily --days 400 --no-skip-done
+
     # Only refresh today's data (for daily cron)
     python -m src.pipelines.collect_daily --today
 """
 from __future__ import annotations
+
+# Load .env BEFORE importing pykrx-using modules so that KRX_ID / KRX_PW
+# are visible to pykrx (which reads os.environ directly).
+# Required since 2026.01.27 KRX Data Marketplace 회원제 전환.
+from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 import argparse
 from datetime import date
@@ -37,6 +47,10 @@ def main() -> None:
         "--skip-tickers", action="store_true",
         help="Skip ticker master refresh",
     )
+    parser.add_argument(
+        "--no-skip-done", action="store_true",
+        help="Re-collect dates even if already marked success in collection_log",
+    )
     args = parser.parse_args()
 
     # Step 1: refresh ticker master
@@ -58,7 +72,12 @@ def main() -> None:
             )
             raise
     else:
-        backfill(start_date=args.start, end_date=args.end, days=args.days)
+        backfill(
+            start_date=args.start,
+            end_date=args.end,
+            days=args.days,
+            skip_done=not args.no_skip_done,
+        )
 
 
 if __name__ == "__main__":

@@ -8,7 +8,10 @@ dependencies = [
     "sqlalchemy>=2.0.30",
     "psycopg[binary]>=3.2.0",
     # Data sources
-    "pykrx>=1.0.45",
+    "pykrx>=1.1.1",  # >=1.1.1 needed for KRX Data Marketplace login (2026.01 정책 변경)
+    "finance-datareader>=0.9.96",  # complementary/fallback source (see src/collectors/daily_fdr.py)
+    # .env loader for KRX_ID/KRX_PW + DB creds (loaded explicitly in pipeline entrypoints)
+    "python-dotenv>=1.0.0",
     # HTTP client for KIS API (kis/ module — planned)
     "httpx>=0.27.0",
     # Data manipulation

@@ -45,11 +45,19 @@ QUERIES: dict[str, str] = {
         ORDER BY d.date DESC, t.market
     """,
     "samsung_recent_30d": """
-        SELECT date, open, high, low, close, volume
-        FROM daily_prices
+        SELECT date, name, open, high, low, close, volume
+        FROM v_daily_prices
         WHERE symbol = '005930'
         ORDER BY date DESC
         LIMIT 30
+    """,
+    "top_market_cap_latest": """
+        SELECT date, symbol, name, market, close, market_cap
+        FROM v_daily_prices
+        WHERE date = (SELECT MAX(date) FROM daily_prices)
+          AND market_cap IS NOT NULL
+        ORDER BY market_cap DESC
+        LIMIT 10
     """,
     "collection_failures": """
         SELECT target_date, collector, status, error_message

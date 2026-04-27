@@ -83,6 +83,42 @@ class MinutePrice(Base):
     value: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
+class DailyPriceWithName(Base):
+    """Read-only mapping for the v_daily_prices view.
+
+    Not a real table. Managed by migrations/005_daily_prices_view.sql.
+    Use this ONLY for SELECTs where you want ticker name/sector alongside
+    the price row. Writes go through DailyPrice / upsert_daily_prices.
+
+    The composite (symbol, date) is still the logical primary key even
+    though a view has no real PK — SQLAlchemy requires at least one
+    primary_key=True column to map a class.
+    """
+    __tablename__ = "v_daily_prices"
+    __table_args__ = {"info": {"is_view": True}}
+
+    symbol: Mapped[str] = mapped_column(String(10), primary_key=True)
+    date: Mapped[date] = mapped_column(Date, primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    market: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    sector: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    industry: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    open: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    high: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    low: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    close: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    value: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    market_cap: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    shares: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    foreign_net: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    institution_net: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    individual_net: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    per: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
+    pbr: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
+    dividend_yield: Mapped[Decimal | None] = mapped_column(Numeric(6, 3), nullable=True)
+
+
 class CollectionLog(Base):
     __tablename__ = "collection_log"
 
