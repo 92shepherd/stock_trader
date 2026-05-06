@@ -15,7 +15,7 @@ import pandas as pd
 from sqlalchemy import select, text
 
 from src.db.connection import raw_connection, session_scope
-from src.db.models import CollectionLog, Ticker
+from src.db.models import CollectionLog, Ticker, TickerUS
 from src.utils.logger import logger
 
 
@@ -140,6 +140,114 @@ def query_daily_with_names(
 
     with raw_connection() as conn:
         return pd.read_sql(sql, conn, params=params)
+
+
+# -------------------- US tickers & daily prices --------------------
+
+US_DAILY_COLUMNS = [
+    "symbol", "date", "open", "high", "low", "close",
+    "adj_close", "volume", "dividend", "split_ratio", "source",
+]
+
+
+def get_active_us_tickers(
+    exchanges: list[str] | None = None,
+    security_types: list[str] | None = None,
+    include_test_issues: bool = False,
+) -> list[TickerUS]:
+    """Return non-delisted US tickers, optionally filtered.
+
+    Args:
+        exchanges: e.g. ["NASDAQ", "NYSE"]. None = all exchanges.
+        security_types: e.g. ["COMMON", "ETF"]. None = all types.
+        include_test_issues: if False (default), exclude tickers flagged
+            as test_issue=True (NASDAQ Trader maintenance/test entries).
+    """
+    with session_scope() as session:
+        stmt = select(TickerUS).where(TickerUS.delisted.is_(False))
+        if exchanges:
+            stmt = stmt.where(TickerUS.exchange.in_(exchanges))
+        if security_types:
+            stmt = stmt.where(TickerUS.security_type.in_(security_types))
+        if not include_test_issues:
+            stmt = stmt.where(TickerUS.test_issue.is_(False))
+        stmt = stmt.order_by(TickerUS.symbol)
+        return list(session.execute(stmt).scalars().all())
+
+
+def upsert_daily_prices_us(df: pd.DataFrame) -> int:
+    """Bulk upsert daily_prices_us via COPY + ON CONFLICT.
+
+    Mirrors `upsert_daily_prices` (Korea) but writes to the US table.
+    Expects df columns to be a subset of US_DAILY_COLUMNS; missing
+    columns will be NULLed out.
+    """
+    if df.empty:
+        return 0
+
+    for col in US_DAILY_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[US_DAILY_COLUMNS].copy()
+
+    buf = StringIO()
+    df.to_csv(buf, index=False, header=False, sep="\t", na_rep="\\N")
+    buf.seek(0)
+
+    col_list = ", ".join(US_DAILY_COLUMNS)
+    update_cols = [c for c in US_DAILY_COLUMNS if c not in ("symbol", "date")]
+    update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+
+    with raw_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TEMP TABLE tmp_daily_us "
+                "(LIKE daily_prices_us INCLUDING DEFAULTS) "
+                "ON COMMIT DROP"
+            )
+            with cur.copy(
+                f"COPY tmp_daily_us ({col_list}) FROM STDIN "
+                f"WITH (FORMAT CSV, DELIMITER E'\\t', NULL '\\N')"
+            ) as copy:
+                copy.write(buf.read())
+            cur.execute(
+                f"INSERT INTO daily_prices_us ({col_list}) "
+                f"SELECT {col_list} FROM tmp_daily_us "
+                f"ON CONFLICT (symbol, date) DO UPDATE SET {update_clause}"
+            )
+            affected = cur.rowcount
+    return affected
+
+
+def get_completed_us_symbols_in_range(
+    collector: str,
+    start: date,
+    end: date,
+) -> set[str]:
+    """Resume helper for symbol-iterating US collectors.
+
+    Same semantics as `get_completed_symbols_in_range` (Korea) — the
+    function is duplicated rather than shared so each market can have
+    independent resume logic if needed in the future. For now they are
+    identical because `collection_log` is a single global table keyed
+    by (collector, target_date, symbol).
+    """
+    _ = start  # preserved for API symmetry
+    with session_scope() as session:
+        stmt = text("""
+            SELECT DISTINCT symbol
+              FROM collection_log
+             WHERE collector = :col
+               AND status    = 'success'
+               AND target_date = :end_date
+               AND symbol IS NOT NULL
+               AND rows_inserted > 0
+        """)
+        return {
+            r[0] for r in session.execute(
+                stmt, {"col": collector, "end_date": end}
+            ).all()
+        }
 
 
 # -------------------- Minute prices --------------------

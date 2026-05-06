@@ -119,6 +119,68 @@ class DailyPriceWithName(Base):
     dividend_yield: Mapped[Decimal | None] = mapped_column(Numeric(6, 3), nullable=True)
 
 
+class TickerUS(Base):
+    """US stock ticker master.
+
+    Separate from `tickers` (Korean) because the symbol space is
+    different (alphanumeric, up to 8 chars with dots/hyphens vs Korea's
+    6-digit numeric), the exchanges are different, and the security
+    type taxonomy (ETF/ADR/preferred/warrant/unit) is US-specific.
+    """
+    __tablename__ = "tickers_us"
+
+    symbol: Mapped[str] = mapped_column(String(15), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    exchange: Mapped[str] = mapped_column(String(10))
+    security_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    is_etf: Mapped[bool] = mapped_column(Boolean, default=False)
+    test_issue: Mapped[bool] = mapped_column(Boolean, default=False)
+    listing_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    delisted: Mapped[bool] = mapped_column(Boolean, default=False)
+    delisted_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    def __repr__(self) -> str:
+        return f"<TickerUS {self.symbol} {self.name} ({self.exchange})>"
+
+
+class DailyPriceUS(Base):
+    """US daily prices from yfinance.
+
+    Differences from DailyPrice (Korea):
+      - NUMERIC(14,4) instead of (14,2): US penny stocks / ETFs need
+        more decimal places.
+      - adj_close: yfinance's split/dividend-adjusted close. Use this
+        for backtesting; use `close` for raw historical price.
+      - dividend / split_ratio columns: yfinance returns these per-day
+        on the same call as OHLCV.
+      - No market_cap / per / pbr / investor_flows: yfinance's
+        `download()` doesn't include them. Fetch via fast_info or a
+        separate collector if needed.
+    """
+    __tablename__ = "daily_prices_us"
+
+    symbol: Mapped[str] = mapped_column(String(15), primary_key=True)
+    date: Mapped[date] = mapped_column(Date, primary_key=True)
+    open: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    high: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    low: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    close: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    adj_close: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    dividend: Mapped[Decimal | None] = mapped_column(Numeric(12, 6), default=0)
+    split_ratio: Mapped[Decimal | None] = mapped_column(Numeric(12, 6), default=0)
+    source: Mapped[str] = mapped_column(String(20), default="yfinance")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class CollectionLog(Base):
     __tablename__ = "collection_log"
 
