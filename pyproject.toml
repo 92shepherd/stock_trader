@@ -11,6 +11,7 @@ dependencies = [
     "pykrx>=1.1.1",  # >=1.1.1 needed for KRX Data Marketplace login (2026.01 정책 변경)
     "finance-datareader>=0.9.96",  # complementary/fallback source (see src/collectors/daily_fdr.py)
     "yfinance>=0.2.40",  # US market daily prices (see src/collectors/daily_us_yf.py)
+    "opendartreader>=0.2.0",  # DART (금융감독원 전자공시) API client (see src/collectors/dart_*.py)
     # .env loader for KRX_ID/KRX_PW + DB creds (loaded explicitly in pipeline entrypoints)
     "python-dotenv>=1.0.0",
     # HTTP client for KIS API (kis/ module — planned)

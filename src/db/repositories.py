@@ -15,7 +15,15 @@ import pandas as pd
 from sqlalchemy import select, text
 
 from src.db.connection import raw_connection, session_scope
-from src.db.models import CollectionLog, Ticker, TickerUS
+from src.db.models import (
+    CollectionLog,
+    DartCorpCode,
+    DartDisclosure,
+    DartFinancial,
+    DartIndicator,
+    Ticker,
+    TickerUS,
+)
 from src.utils.logger import logger
 
 
@@ -246,6 +254,311 @@ def get_completed_us_symbols_in_range(
         return {
             r[0] for r in session.execute(
                 stmt, {"col": collector, "end_date": end}
+            ).all()
+        }
+
+
+# -------------------- DART (corp_codes & disclosures) --------------------
+
+DART_CORP_CODE_COLUMNS = [
+    "corp_code", "corp_name", "stock_code", "modify_date",
+]
+DART_DISCLOSURE_COLUMNS = [
+    "rcept_no", "corp_code", "corp_name", "stock_code", "corp_cls",
+    "report_nm", "rcept_dt", "flr_nm", "rm", "kind", "kind_detail",
+]
+
+
+def upsert_dart_corp_codes(df: pd.DataFrame) -> int:
+    """Bulk upsert dart_corp_codes via COPY + ON CONFLICT.
+
+    Source: DART corpCode.xml ZIP. ~100k rows expected, replaced in full
+    on every refresh — ON CONFLICT DO UPDATE keeps existing PKs while
+    refreshing name/stock_code/modify_date.
+
+    Expects df columns: corp_code, corp_name, stock_code, modify_date.
+    Missing columns are NULLed out.
+    """
+    if df.empty:
+        return 0
+
+    for col in DART_CORP_CODE_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[DART_CORP_CODE_COLUMNS].copy()
+
+    buf = StringIO()
+    df.to_csv(buf, index=False, header=False, sep="\t", na_rep="\\N")
+    buf.seek(0)
+
+    col_list = ", ".join(DART_CORP_CODE_COLUMNS)
+    update_cols = [c for c in DART_CORP_CODE_COLUMNS if c != "corp_code"]
+    update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+    update_clause += ", updated_at = NOW()"
+
+    with raw_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TEMP TABLE tmp_dart_corp "
+                "(LIKE dart_corp_codes INCLUDING DEFAULTS) "
+                "ON COMMIT DROP"
+            )
+            with cur.copy(
+                f"COPY tmp_dart_corp ({col_list}) FROM STDIN "
+                f"WITH (FORMAT CSV, DELIMITER E'\\t', NULL '\\N')"
+            ) as copy:
+                copy.write(buf.read())
+            cur.execute(
+                f"INSERT INTO dart_corp_codes ({col_list}) "
+                f"SELECT {col_list} FROM tmp_dart_corp "
+                f"ON CONFLICT (corp_code) DO UPDATE SET {update_clause}"
+            )
+            affected = cur.rowcount
+    return affected
+
+
+def upsert_dart_disclosures(df: pd.DataFrame) -> int:
+    """Bulk upsert dart_disclosures via COPY + ON CONFLICT.
+
+    PK is rcept_no (14-digit). DART can re-issue the same rcept_no with
+    updated metadata when a disclosure is amended (rm field changes),
+    so we DO update on conflict.
+    """
+    if df.empty:
+        return 0
+
+    for col in DART_DISCLOSURE_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[DART_DISCLOSURE_COLUMNS].copy()
+
+    buf = StringIO()
+    df.to_csv(buf, index=False, header=False, sep="\t", na_rep="\\N")
+    buf.seek(0)
+
+    col_list = ", ".join(DART_DISCLOSURE_COLUMNS)
+    update_cols = [c for c in DART_DISCLOSURE_COLUMNS if c != "rcept_no"]
+    update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+
+    with raw_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TEMP TABLE tmp_dart_disc "
+                "(LIKE dart_disclosures INCLUDING DEFAULTS) "
+                "ON COMMIT DROP"
+            )
+            with cur.copy(
+                f"COPY tmp_dart_disc ({col_list}) FROM STDIN "
+                f"WITH (FORMAT CSV, DELIMITER E'\\t', NULL '\\N')"
+            ) as copy:
+                copy.write(buf.read())
+            cur.execute(
+                f"INSERT INTO dart_disclosures ({col_list}) "
+                f"SELECT {col_list} FROM tmp_dart_disc "
+                f"ON CONFLICT (rcept_no) DO UPDATE SET {update_clause}"
+            )
+            affected = cur.rowcount
+    return affected
+
+
+def get_corp_code_by_stock(stock_code: str) -> str | None:
+    """Look up DART corp_code from a 6-digit stock_code.
+
+    Returns None if the stock is unknown to DART (very rare for listed
+    securities, but possible for newly-listed names before the next
+    DART corp-code refresh).
+    """
+    with session_scope() as session:
+        stmt = (
+            select(DartCorpCode.corp_code)
+            .where(DartCorpCode.stock_code == stock_code)
+            .limit(1)
+        )
+        row = session.execute(stmt).first()
+        return row[0] if row else None
+
+
+def get_dart_corp_codes_freshness() -> datetime | None:
+    """Return the most recent updated_at across dart_corp_codes.
+
+    Used by the corp_codes collector to decide whether to refresh based
+    on a stale-after-N-days policy. Returns None if the table is empty.
+    """
+    with session_scope() as session:
+        stmt = text("SELECT MAX(updated_at) FROM dart_corp_codes")
+        row = session.execute(stmt).first()
+        return row[0] if row and row[0] else None
+
+
+# -------------------- DART financials & indicators (Phase 2) --------------------
+
+# Order matches the columns in dart_financials. account_nm is the last
+# PK component because it's the most variable; ordering this way keeps
+# the COPY column list aligned with how DART returns data.
+DART_FINANCIAL_COLUMNS = [
+    "corp_code", "bsns_year", "reprt_code", "fs_div", "account_nm",
+    "sj_div", "account_id",
+    "thstrm_amount", "frmtrm_amount", "bfefrmtrm_amount",
+    "thstrm_add_amount",
+    "currency", "ord", "source",
+]
+DART_INDICATOR_COLUMNS = [
+    "corp_code", "bsns_year", "reprt_code", "fs_div", "idx_nm",
+    "idx_cl_code", "idx_cl_nm", "idx_code",
+    "thstrm_value", "frmtrm_value", "bfefrmtrm_value",
+    "source",
+]
+
+# PK columns to skip from UPDATE SET on conflict (they're already matched).
+_DART_FIN_PK = ("corp_code", "bsns_year", "reprt_code", "fs_div", "account_nm")
+_DART_IDX_PK = ("corp_code", "bsns_year", "reprt_code", "fs_div", "idx_nm")
+
+
+def upsert_dart_financials(df: pd.DataFrame) -> int:
+    """Bulk upsert dart_financials via COPY + ON CONFLICT.
+
+    Re-run safety: PK is the natural composite key, so re-collecting the
+    same (corp, year, reprt, fs_div) overwrites cleanly.
+    """
+    if df.empty:
+        return 0
+
+    for col in DART_FINANCIAL_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[DART_FINANCIAL_COLUMNS].copy()
+
+    buf = StringIO()
+    df.to_csv(buf, index=False, header=False, sep="\t", na_rep="\\N")
+    buf.seek(0)
+
+    col_list = ", ".join(DART_FINANCIAL_COLUMNS)
+    update_cols = [c for c in DART_FINANCIAL_COLUMNS if c not in _DART_FIN_PK]
+    update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+
+    with raw_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TEMP TABLE tmp_dart_fin "
+                "(LIKE dart_financials INCLUDING DEFAULTS) "
+                "ON COMMIT DROP"
+            )
+            with cur.copy(
+                f"COPY tmp_dart_fin ({col_list}) FROM STDIN "
+                f"WITH (FORMAT CSV, DELIMITER E'\\t', NULL '\\N')"
+            ) as copy:
+                copy.write(buf.read())
+            cur.execute(
+                f"INSERT INTO dart_financials ({col_list}) "
+                f"SELECT {col_list} FROM tmp_dart_fin "
+                f"ON CONFLICT (corp_code, bsns_year, reprt_code, fs_div, account_nm) "
+                f"DO UPDATE SET {update_clause}"
+            )
+            affected = cur.rowcount
+    return affected
+
+
+def upsert_dart_indicators(df: pd.DataFrame) -> int:
+    """Bulk upsert dart_indicators via COPY + ON CONFLICT."""
+    if df.empty:
+        return 0
+
+    for col in DART_INDICATOR_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[DART_INDICATOR_COLUMNS].copy()
+
+    buf = StringIO()
+    df.to_csv(buf, index=False, header=False, sep="\t", na_rep="\\N")
+    buf.seek(0)
+
+    col_list = ", ".join(DART_INDICATOR_COLUMNS)
+    update_cols = [c for c in DART_INDICATOR_COLUMNS if c not in _DART_IDX_PK]
+    update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+
+    with raw_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TEMP TABLE tmp_dart_idx "
+                "(LIKE dart_indicators INCLUDING DEFAULTS) "
+                "ON COMMIT DROP"
+            )
+            with cur.copy(
+                f"COPY tmp_dart_idx ({col_list}) FROM STDIN "
+                f"WITH (FORMAT CSV, DELIMITER E'\\t', NULL '\\N')"
+            ) as copy:
+                copy.write(buf.read())
+            cur.execute(
+                f"INSERT INTO dart_indicators ({col_list}) "
+                f"SELECT {col_list} FROM tmp_dart_idx "
+                f"ON CONFLICT (corp_code, bsns_year, reprt_code, fs_div, idx_nm) "
+                f"DO UPDATE SET {update_clause}"
+            )
+            affected = cur.rowcount
+    return affected
+
+
+def get_listed_corp_codes() -> list[tuple[str, str]]:
+    """Return (corp_code, stock_code) for all listed Korean companies.
+
+    Used by financial/indicator collectors to iterate over the universe.
+    Drops anything where stock_code is NULL (non-listed) or where the
+    company is flagged delisted in the local tickers table (best-effort).
+    """
+    with session_scope() as session:
+        # Pull DART corp_codes that have a stock_code, then filter against
+        # the local tickers table to exclude delisted symbols.
+        stmt = text("""
+            SELECT c.corp_code, c.stock_code
+              FROM dart_corp_codes c
+              LEFT JOIN tickers t ON t.symbol = c.stock_code
+             WHERE c.stock_code IS NOT NULL
+               AND (t.delisted IS NULL OR t.delisted = FALSE)
+             ORDER BY c.stock_code
+        """)
+        return [(r[0], r[1]) for r in session.execute(stmt).all()]
+
+
+def get_completed_dart_financials_keys(
+    bsns_year: int,
+    reprt_code: str,
+    fs_div: str,
+) -> set[str]:
+    """Return corp_codes already collected for (year, reprt_code, fs_div).
+
+    Used by the collector to skip combinations already done. We define
+    'collected' as 'has at least one row in dart_financials for this PK
+    triple', not 'has a success log entry' — that's because the data
+    presence itself is the source of truth and survives log table resets.
+    """
+    with session_scope() as session:
+        stmt = text("""
+            SELECT DISTINCT corp_code
+              FROM dart_financials
+             WHERE bsns_year = :y AND reprt_code = :r AND fs_div = :f
+        """)
+        return {
+            r[0] for r in session.execute(
+                stmt, {"y": bsns_year, "r": reprt_code, "f": fs_div}
+            ).all()
+        }
+
+
+def get_completed_dart_indicators_keys(
+    bsns_year: int,
+    reprt_code: str,
+    fs_div: str,
+) -> set[str]:
+    """Same as get_completed_dart_financials_keys but for indicators."""
+    with session_scope() as session:
+        stmt = text("""
+            SELECT DISTINCT corp_code
+              FROM dart_indicators
+             WHERE bsns_year = :y AND reprt_code = :r AND fs_div = :f
+        """)
+        return {
+            r[0] for r in session.execute(
+                stmt, {"y": bsns_year, "r": reprt_code, "f": fs_div}
             ).all()
         }
 

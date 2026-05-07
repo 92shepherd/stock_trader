@@ -181,6 +181,165 @@ class DailyPriceUS(Base):
     )
 
 
+class DartCorpCode(Base):
+    """DART corp_code master (mapping between DART's 8-digit corp_code
+    and our 6-digit stock_code, plus company name).
+
+    Source: https://opendart.fss.or.kr/api/corpCode.xml (ZIP, ~100k rows)
+    Most rows are non-listed companies (stock_code is NULL); we keep
+    them all because DART references them in disclosure feeds.
+
+    The corp_code is the entry point for almost every other DART API
+    call, so this table is effectively a foreign-key dictionary.
+    """
+    __tablename__ = "dart_corp_codes"
+
+    corp_code: Mapped[str] = mapped_column(String(8), primary_key=True)
+    corp_name: Mapped[str] = mapped_column(String(200))
+    stock_code: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    modify_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    def __repr__(self) -> str:
+        return f"<DartCorpCode {self.corp_code} {self.corp_name} stock={self.stock_code}>"
+
+
+class DartDisclosure(Base):
+    """DART disclosure list entry (Phase 1).
+
+    One row per DART disclosure, keyed by `rcept_no` (14-digit receipt
+    number — DART's globally unique identifier for any disclosure).
+
+    Phase 1 collection policy:
+      - Listed companies only (stock_code IS NOT NULL)
+      - Major-event reports (kind='B') are the priority signal but all
+        kinds are stored; filtering happens at query time
+
+    Use the `v_dart_disclosures` view for joined reads with
+    `tickers.name`.
+    """
+    __tablename__ = "dart_disclosures"
+
+    rcept_no: Mapped[str] = mapped_column(String(14), primary_key=True)
+    corp_code: Mapped[str] = mapped_column(String(8))
+    corp_name: Mapped[str] = mapped_column(String(200))
+    stock_code: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    corp_cls: Mapped[str | None] = mapped_column(String(1), nullable=True)
+    report_nm: Mapped[str] = mapped_column(String(500))
+    rcept_dt: Mapped[date] = mapped_column(Date)
+    flr_nm: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    rm: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    kind: Mapped[str | None] = mapped_column(String(1), nullable=True)
+    kind_detail: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<DartDisclosure {self.rcept_no} {self.corp_name} "
+            f"{self.report_nm[:30]} ({self.rcept_dt})>"
+        )
+
+
+class DartFinancial(Base):
+    """DART major-account financial statements (Phase 2).
+
+    Source: fnlttSinglAcnt API — ~12 rows per (company, year, quarter,
+    fs_div) call. Stored in LONG form (one row per account_nm) so that
+    accounting-standard changes don't require schema migrations.
+
+    Key design choices:
+      - PK = (corp_code, bsns_year, reprt_code, fs_div, account_nm)
+        — account_id can be NULL for some special accounts, so we use
+        account_nm in the PK instead.
+      - Amounts stored as NUMERIC(20,0) since DART returns integer KRW.
+      - DART returns 3 years (current/prior/prior-prior) per call;
+        we keep all three to enable trend calculation without extra
+        round-trips.
+      - Income-statement items are CUMULATIVE (Q1 = Q1, H1 = Q1+Q2,
+        etc.). Quarterly stand-alone values must be derived at query
+        time by subtracting prior cumulative.
+    """
+    __tablename__ = "dart_financials"
+
+    corp_code: Mapped[str] = mapped_column(String(8), primary_key=True)
+    bsns_year: Mapped[int] = mapped_column(Integer, primary_key=True)
+    reprt_code: Mapped[str] = mapped_column(String(5), primary_key=True)
+    fs_div: Mapped[str] = mapped_column(String(3), primary_key=True)
+    account_nm: Mapped[str] = mapped_column(String(200), primary_key=True)
+
+    sj_div: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    account_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    thstrm_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 0), nullable=True)
+    frmtrm_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 0), nullable=True)
+    bfefrmtrm_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 0), nullable=True)
+    thstrm_add_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 0), nullable=True)
+
+    currency: Mapped[str | None] = mapped_column(String(10), default="KRW")
+    ord: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source: Mapped[str | None] = mapped_column(String(40), default="dart_fnltt_single_acnt")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<DartFinancial {self.corp_code} {self.bsns_year}/{self.reprt_code} "
+            f"{self.fs_div} {self.account_nm}={self.thstrm_amount}>"
+        )
+
+
+class DartIndicator(Base):
+    """DART major financial indicators (Phase 2).
+
+    Source: fnlttSinglIndx API — ~25 rows per (company, year, quarter,
+    fs_div) call. DART pre-computes profitability/stability/growth/
+    activity ratios so we don't have to.
+
+    Categories (idx_cl_code):
+      - M210000  Profitability (수익성): operating margin, ROA, ROE, ...
+      - M220000  Stability     (안정성): debt ratio, current ratio, ...
+      - M230000  Growth        (성장성): revenue growth rate, ...
+      - M240000  Activity      (활동성): asset turnover, ...
+
+    Values are stored as NUMERIC(15, 4) — ratios in % units, where
+    actual range is roughly -1000 to +1000.
+    """
+    __tablename__ = "dart_indicators"
+
+    corp_code: Mapped[str] = mapped_column(String(8), primary_key=True)
+    bsns_year: Mapped[int] = mapped_column(Integer, primary_key=True)
+    reprt_code: Mapped[str] = mapped_column(String(5), primary_key=True)
+    fs_div: Mapped[str] = mapped_column(String(3), primary_key=True)
+    idx_nm: Mapped[str] = mapped_column(String(200), primary_key=True)
+
+    idx_cl_code: Mapped[str | None] = mapped_column(String(7), nullable=True)
+    idx_cl_nm: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    idx_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    thstrm_value: Mapped[Decimal | None] = mapped_column(Numeric(15, 4), nullable=True)
+    frmtrm_value: Mapped[Decimal | None] = mapped_column(Numeric(15, 4), nullable=True)
+    bfefrmtrm_value: Mapped[Decimal | None] = mapped_column(Numeric(15, 4), nullable=True)
+
+    source: Mapped[str | None] = mapped_column(String(40), default="dart_fnltt_single_indx")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<DartIndicator {self.corp_code} {self.bsns_year}/{self.reprt_code} "
+            f"{self.fs_div} {self.idx_nm}={self.thstrm_value}>"
+        )
+
+
 class CollectionLog(Base):
     __tablename__ = "collection_log"
 

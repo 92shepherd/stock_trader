@@ -56,6 +56,34 @@ class KISSettings(BaseSettings):
     kis_mode: str = "paper"  # paper | real
 
 
+class DartSettings(BaseSettings):
+    """DART OpenAPI credentials & policy.
+
+    api_key comes from .env (DART_API_KEY). Get one at:
+        https://opendart.fss.or.kr/  →  인증키 신청/관리
+
+    Personal-use limit: 10,000 calls/day. Plenty for this project's
+    pattern (1 corp_codes refresh + ~10 disclosure-list calls per day).
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    dart_api_key: str = ""
+    # Refresh dart_corp_codes if older than this many days. Stock_codes
+    # rarely change, but new IPOs need a fresh pull to be discoverable.
+    dart_corp_codes_stale_after_days: int = 7
+
+    # Compatibility aliases so callers can write `cfg.dart.api_key`
+    # rather than the env-var-style `cfg.dart.dart_api_key`.
+    @property
+    def api_key(self) -> str:
+        return self.dart_api_key
+
+    @property
+    def corp_codes_stale_after_days(self) -> int:
+        return self.dart_corp_codes_stale_after_days
+
+
 class DailyConfig(BaseModel):
     backfill_days: int = 400
     request_delay: float = 0.3
@@ -80,6 +108,9 @@ class AppConfig(BaseModel):
     collection: CollectionConfig = Field(default_factory=CollectionConfig)
     markets: list[str] = Field(default_factory=lambda: ["KOSPI", "KOSDAQ"])
     exclude_patterns: list[str] = Field(default_factory=list)
+    # DART settings live under cfg.dart for namespacing alongside cfg.collection.
+    # Loaded from .env (not settings.yaml) because it contains the API key.
+    dart: DartSettings = Field(default_factory=DartSettings)
 
 
 @lru_cache
@@ -99,4 +130,9 @@ def get_app_config() -> AppConfig:
         return AppConfig()
     with yaml_path.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
+    # DartSettings reads from .env, not settings.yaml. AppConfig's default
+    # factory will pick up env vars, but if the YAML supplies a 'dart' key
+    # we still want env to win for the API key (security). Drop any 'dart'
+    # block from YAML and let DartSettings load from .env.
+    data.pop("dart", None)
     return AppConfig(**data)

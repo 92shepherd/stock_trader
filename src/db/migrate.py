@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from psycopg import RawCursor
 from sqlalchemy import text
 
 from src.db.connection import get_engine
@@ -29,7 +30,22 @@ def _applied_set(conn) -> set[str]:
 
 
 def run_migrations() -> None:
-    """Apply any pending migrations."""
+    """Apply any pending migrations.
+
+    Why RawCursor (psycopg3):
+        psycopg3 by default treats '%' in SQL text as the start of a
+        parameter placeholder (%s, %(name)s). That breaks migration files
+        that contain '%' in comments (e.g. "-- ratio in % units") or in
+        string literals, even though no parameters are being bound.
+
+        RawCursor uses PostgreSQL native placeholders ($1, $2) instead,
+        so '%' in the SQL text is left untouched. Since our migrations
+        never bind parameters, this is exactly the right tool.
+
+        Reference:
+            https://www.psycopg.org/psycopg3/docs/advanced/cursors.html
+            #raw-query-cursors
+    """
     engine = get_engine()
     files = sorted(MIGRATIONS_DIR.glob("*.sql"))
     if not files:
@@ -50,8 +66,11 @@ def run_migrations() -> None:
 
         # Each migration runs in its own transaction; if it fails, we stop.
         with engine.begin() as conn:
-            # Execute as a whole block (supports DO $$ ... $$ syntax)
-            conn.exec_driver_sql(sql)
+            # Borrow the underlying psycopg3 connection from SQLAlchemy and
+            # build a RawCursor on it so '%' in the SQL is not parsed.
+            raw_conn = conn.connection.dbapi_connection
+            with RawCursor(raw_conn) as cur:
+                cur.execute(sql)
             conn.execute(
                 text("INSERT INTO schema_migrations(filename) VALUES (:f)"),
                 {"f": f.name},
