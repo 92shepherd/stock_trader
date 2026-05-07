@@ -17,6 +17,7 @@ data/pgdata/
 data/logs/
 data/raw/
 data/processed/
+data/kis/
 *.parquet
 *.duckdb
 
