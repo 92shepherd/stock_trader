@@ -1,0 +1,528 @@
+{
+  "info": {
+    "_postman_id": "8a4d2f10-6c9b-4d3e-9f12-7a3b8e5c4d11",
+    "name": "DART Open API (stock_trader)",
+    "description": "OpenDart (전자공시시스템) API 컬렉션. stock_trader 프로젝트의 collect_dart 파이프라인에서 호출하는 4개 엔드포인트를 모두 포함합니다.\n\n## 엔드포인트\n1. **corpCode.xml** — 기업 고유번호 매핑 (ZIP 다운로드)\n2. **list.json** — 공시검색\n3. **fnlttSinglAcnt.json** — 단일회사 주요계정\n4. **fnlttSinglIndx.json** — 단일회사 주요재무지표\n\n## 사용법\n1. Collection을 import한 후 우측 상단 환경(Environment) 또는 Variables 탭에서 `crtfc_key`에 본인의 DART API 키를 입력하세요.\n2. `corp_code` 변수는 기본값으로 `00126380`(삼성전자)이 들어 있습니다. 다른 회사 조회 시 변경하세요.\n3. 자주 쓰는 corp_code 예시:\n   - 삼성전자: 00126380\n   - SK하이닉스: 00164779\n   - LG에너지솔루션: 01515323\n   - 네이버: 00266961\n   - 카카오: 00918444\n\n## 한도\n- 일일 호출 한도: 10,000회 (status `020` = rate limit)\n- 응답 status 코드: `000`(정상) / `010`(미등록 키) / `011`(사용중지) / `012`(접근권한 없음) / `013`(데이터 없음) / `014`(파일 없음) / `020`(한도초과) / `021`(조회 가능 회수 초과) / `100`(필드 누락) / `101`(부적절한 값) / `800`(시스템 점검) / `900`(정의되지 않은 오류) / `901`(사용자 계정 없음).\n\n## 분류 코드 참고\n### reprt_code (보고서 코드)\n- `11013` = 1분기보고서 (Q1)\n- `11012` = 반기보고서 (H1)\n- `11014` = 3분기보고서 (Q3)\n- `11011` = 사업보고서 (FY, 연간)\n\n### fs_div (재무제표 구분)\n- `CFS` = 연결재무제표\n- `OFS` = 별도(개별)재무제표\n\n### kind (공시 분류, list.json)\n- `A` = 정기공시 / `B` = 주요사항보고 / `C` = 발행공시 / `D` = 지분공시 / `E` = 기타공시\n- `F` = 외부감사관련 / `G` = 펀드공시 / `H` = 자산유동화 / `I` = 거래소공시 / `J` = 공정위공시\n\n### idx_cl_code (재무지표 분류, fnlttSinglIndx.json)\n- `M210000` = 수익성지표\n- `M220000` = 안정성지표\n- `M230000` = 성장성지표\n- `M240000` = 활동성지표\n",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://opendart.fss.or.kr/api",
+      "type": "string",
+      "description": "DART Open API 기본 URL"
+    },
+    {
+      "key": "crtfc_key",
+      "value": "YOUR_DART_API_KEY_HERE",
+      "type": "string",
+      "description": "DART 인증키 (https://opendart.fss.or.kr/uss/umt/EgovMberInsertView.do 에서 발급)"
+    },
+    {
+      "key": "corp_code",
+      "value": "00126380",
+      "type": "string",
+      "description": "DART 기업 고유번호 (기본: 삼성전자)"
+    },
+    {
+      "key": "bsns_year",
+      "value": "2024",
+      "type": "string",
+      "description": "사업연도 (4자리)"
+    },
+    {
+      "key": "reprt_code",
+      "value": "11011",
+      "type": "string",
+      "description": "보고서 코드 (11013/11012/11014/11011)"
+    },
+    {
+      "key": "fs_div",
+      "value": "CFS",
+      "type": "string",
+      "description": "재무제표 구분 (CFS=연결, OFS=별도)"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. corpCode.xml — 기업 고유번호",
+      "description": "DART에 등록된 모든 회사(상장+비상장)의 고유번호 매핑을 ZIP으로 다운로드합니다.\n\n**중요**: 응답은 application/zip이며, ZIP 안에 CORPCODE.xml이 들어 있습니다. Postman에서는 'Save Response → Save to a file'로 저장 후 압축을 풀어 확인하세요.\n\n수집 빈도: 주 1회 권장 (~10만 row).\n\n응답 XML 필드:\n- `corp_code` (8자리 DART 고유번호)\n- `corp_name` (회사명)\n- `stock_code` (6자리 종목코드, 비상장은 빈 문자열)\n- `modify_date` (YYYYMMDD)",
+      "item": [
+        {
+          "name": "corpCode (전체 다운로드)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/corpCode.xml?crtfc_key={{crtfc_key}}",
+              "host": ["{{base_url}}"],
+              "path": ["corpCode.xml"],
+              "query": [
+                {
+                  "key": "crtfc_key",
+                  "value": "{{crtfc_key}}",
+                  "description": "DART 인증키"
+                }
+              ]
+            },
+            "description": "전체 corp_code 매핑 ZIP 다운로드. 응답 Content-Type: application/zip."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. list.json — 공시검색",
+      "description": "공시 검색 API. 날짜/회사/종류로 필터링하여 공시 목록을 조회합니다.\n\nstock_trader에서는 날짜 단위로 호출(`bgn_de` = `end_de` = 같은 날짜)하여 그 날의 모든 상장사 공시를 한 번에 가져옵니다.\n\n**페이지네이션**: 한 응답 최대 100건. `page_no`/`page_count`로 제어.\n\n주요 응답 필드: `rcept_no`(접수번호 14자리), `corp_code`, `corp_name`, `stock_code`, `corp_cls`(Y/K/N/E), `report_nm`, `rcept_dt`, `flr_nm`, `rm`.",
+      "item": [
+        {
+          "name": "list — 특정 일자 주요사항보고 (kind=B)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/list.json?crtfc_key={{crtfc_key}}&bgn_de=20250502&end_de=20250502&pblntf_ty=B&page_no=1&page_count=100",
+              "host": ["{{base_url}}"],
+              "path": ["list.json"],
+              "query": [
+                {
+                  "key": "crtfc_key",
+                  "value": "{{crtfc_key}}",
+                  "description": "DART 인증키"
+                },
+                {
+                  "key": "bgn_de",
+                  "value": "20250502",
+                  "description": "검색 시작 접수일자 (YYYYMMDD)"
+                },
+                {
+                  "key": "end_de",
+                  "value": "20250502",
+                  "description": "검색 종료 접수일자 (YYYYMMDD)"
+                },
+                {
+                  "key": "pblntf_ty",
+                  "value": "B",
+                  "description": "공시유형 (A/B/C/D/E/F/G/H/I/J)"
+                },
+                {
+                  "key": "page_no",
+                  "value": "1",
+                  "description": "페이지 번호"
+                },
+                {
+                  "key": "page_count",
+                  "value": "100",
+                  "description": "페이지당 건수 (1~100)"
+                }
+              ]
+            },
+            "description": "하루치 주요사항보고(B) 목록. stock_trader Phase 1 cron의 기본 호출 패턴."
+          },
+          "response": []
+        },
+        {
+          "name": "list — 특정 회사 + 특정 기간",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/list.json?crtfc_key={{crtfc_key}}&corp_code={{corp_code}}&bgn_de=20240101&end_de=20241231&page_no=1&page_count=100",
+              "host": ["{{base_url}}"],
+              "path": ["list.json"],
+              "query": [
+                {
+                  "key": "crtfc_key",
+                  "value": "{{crtfc_key}}"
+                },
+                {
+                  "key": "corp_code",
+                  "value": "{{corp_code}}",
+                  "description": "특정 회사 corp_code"
+                },
+                {
+                  "key": "bgn_de",
+                  "value": "20240101"
+                },
+                {
+                  "key": "end_de",
+                  "value": "20241231"
+                },
+                {
+                  "key": "page_no",
+                  "value": "1"
+                },
+                {
+                  "key": "page_count",
+                  "value": "100"
+                }
+              ]
+            },
+            "description": "특정 회사의 1년치 전체 공시."
+          },
+          "response": []
+        },
+        {
+          "name": "list — 정기공시(A)만 + 최종보고서",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/list.json?crtfc_key={{crtfc_key}}&bgn_de=20240301&end_de=20240401&pblntf_ty=A&last_reprt_at=Y&page_no=1&page_count=100",
+              "host": ["{{base_url}}"],
+              "path": ["list.json"],
+              "query": [
+                {
+                  "key": "crtfc_key",
+                  "value": "{{crtfc_key}}"
+                },
+                {
+                  "key": "bgn_de",
+                  "value": "20240301"
+                },
+                {
+                  "key": "end_de",
+                  "value": "20240401"
+                },
+                {
+                  "key": "pblntf_ty",
+                  "value": "A",
+                  "description": "정기공시 (A)"
+                },
+                {
+                  "key": "last_reprt_at",
+                  "value": "Y",
+                  "description": "최종보고서만 (Y/N)"
+                },
+                {
+                  "key": "page_no",
+                  "value": "1"
+                },
+                {
+                  "key": "page_count",
+                  "value": "100"
+                }
+              ]
+            },
+            "description": "사업보고서 시즌(3~4월) 정기공시. last_reprt_at=Y로 정정보고 제외."
+          },
+          "response": []
+        },
+        {
+          "name": "list — 모든 종류(전체) + 상장사만",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/list.json?crtfc_key={{crtfc_key}}&bgn_de=20250506&end_de=20250506&corp_cls=Y&page_no=1&page_count=100",
+              "host": ["{{base_url}}"],
+              "path": ["list.json"],
+              "query": [
+                {
+                  "key": "crtfc_key",
+                  "value": "{{crtfc_key}}"
+                },
+                {
+                  "key": "bgn_de",
+                  "value": "20250506"
+                },
+                {
+                  "key": "end_de",
+                  "value": "20250506"
+                },
+                {
+                  "key": "corp_cls",
+                  "value": "Y",
+                  "description": "법인구분 (Y=유가증권/K=코스닥/N=코넥스/E=기타)"
+                },
+                {
+                  "key": "page_no",
+                  "value": "1"
+                },
+                {
+                  "key": "page_count",
+                  "value": "100"
+                }
+              ]
+            },
+            "description": "특정 일자의 KOSPI 상장사 전체 공시 (pblntf_ty 미지정 = 전체)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. fnlttSinglAcnt.json — 단일회사 주요계정",
+      "description": "단일회사의 분기별 주요계정 재무정보를 조회합니다. 응답은 LONG 형식(한 row = 한 계정과목).\n\n**한 호출 = 한 (corp, year, reprt) 조합**. fs_div 파라미터는 **받지 않으며**, 응답에 CFS/OFS가 모두 섞여서 옵니다 (fs_div 컬럼으로 구분).\n\n주요 응답 필드:\n- `account_id` (IFRS 표준 계정 ID, 예: ifrs-full_Revenue)\n- `account_nm` (계정명, 예: 매출액·영업이익·당기순이익)\n- `sj_div` (BS=재무상태표/IS=손익계산서/CIS=포괄손익/CF=현금흐름/SCE=자본변동)\n- `fs_div` (CFS/OFS)\n- `thstrm_amount` (당기 누적 금액, 원 단위)\n- `frmtrm_amount` (전기)\n- `bfefrmtrm_amount` (전전기)\n- `currency`\n\n**주의**: 데이터는 2015년 이후만 제공.",
+      "item": [
+        {
+          "name": "fnlttSinglAcnt — 사업보고서 (FY, 11011)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/fnlttSinglAcnt.json?crtfc_key={{crtfc_key}}&corp_code={{corp_code}}&bsns_year={{bsns_year}}&reprt_code=11011",
+              "host": ["{{base_url}}"],
+              "path": ["fnlttSinglAcnt.json"],
+              "query": [
+                {
+                  "key": "crtfc_key",
+                  "value": "{{crtfc_key}}"
+                },
+                {
+                  "key": "corp_code",
+                  "value": "{{corp_code}}",
+                  "description": "DART 8자리 고유번호"
+                },
+                {
+                  "key": "bsns_year",
+                  "value": "{{bsns_year}}",
+                  "description": "사업연도 (4자리)"
+                },
+                {
+                  "key": "reprt_code",
+                  "value": "11011",
+                  "description": "11011=사업보고서"
+                }
+              ]
+            },
+            "description": "연간 사업보고서 — 가장 데이터 풍부."
+          },
+          "response": []
+        },
+        {
+          "name": "fnlttSinglAcnt — 1분기 (Q1, 11013)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/fnlttSinglAcnt.json?crtfc_key={{crtfc_key}}&corp_code={{corp_code}}&bsns_year={{bsns_year}}&reprt_code=11013",
+              "host": ["{{base_url}}"],
+              "path": ["fnlttSinglAcnt.json"],
+              "query": [
+                {"key": "crtfc_key", "value": "{{crtfc_key}}"},
+                {"key": "corp_code", "value": "{{corp_code}}"},
+                {"key": "bsns_year", "value": "{{bsns_year}}"},
+                {
+                  "key": "reprt_code",
+                  "value": "11013",
+                  "description": "11013=1분기보고서"
+                }
+              ]
+            },
+            "description": "Q1 분기보고서. 마감일 5/15경."
+          },
+          "response": []
+        },
+        {
+          "name": "fnlttSinglAcnt — 반기 (H1, 11012)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/fnlttSinglAcnt.json?crtfc_key={{crtfc_key}}&corp_code={{corp_code}}&bsns_year={{bsns_year}}&reprt_code=11012",
+              "host": ["{{base_url}}"],
+              "path": ["fnlttSinglAcnt.json"],
+              "query": [
+                {"key": "crtfc_key", "value": "{{crtfc_key}}"},
+                {"key": "corp_code", "value": "{{corp_code}}"},
+                {"key": "bsns_year", "value": "{{bsns_year}}"},
+                {
+                  "key": "reprt_code",
+                  "value": "11012",
+                  "description": "11012=반기보고서"
+                }
+              ]
+            },
+            "description": "H1 반기보고서. 손익은 1~6월 누적값."
+          },
+          "response": []
+        },
+        {
+          "name": "fnlttSinglAcnt — 3분기 (Q3, 11014)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/fnlttSinglAcnt.json?crtfc_key={{crtfc_key}}&corp_code={{corp_code}}&bsns_year={{bsns_year}}&reprt_code=11014",
+              "host": ["{{base_url}}"],
+              "path": ["fnlttSinglAcnt.json"],
+              "query": [
+                {"key": "crtfc_key", "value": "{{crtfc_key}}"},
+                {"key": "corp_code", "value": "{{corp_code}}"},
+                {"key": "bsns_year", "value": "{{bsns_year}}"},
+                {
+                  "key": "reprt_code",
+                  "value": "11014",
+                  "description": "11014=3분기보고서"
+                }
+              ]
+            },
+            "description": "Q3 3분기보고서. 손익은 1~9월 누적값."
+          },
+          "response": []
+        },
+        {
+          "name": "fnlttSinglAcntAll — 전체 재무제표 (참고)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/fnlttSinglAcntAll.json?crtfc_key={{crtfc_key}}&corp_code={{corp_code}}&bsns_year={{bsns_year}}&reprt_code=11011&fs_div={{fs_div}}",
+              "host": ["{{base_url}}"],
+              "path": ["fnlttSinglAcntAll.json"],
+              "query": [
+                {"key": "crtfc_key", "value": "{{crtfc_key}}"},
+                {"key": "corp_code", "value": "{{corp_code}}"},
+                {"key": "bsns_year", "value": "{{bsns_year}}"},
+                {"key": "reprt_code", "value": "11011"},
+                {
+                  "key": "fs_div",
+                  "value": "{{fs_div}}",
+                  "description": "CFS=연결, OFS=별도 (Single과 달리 필수)"
+                }
+              ]
+            },
+            "description": "참고용: stock_trader는 사용하지 않지만, 주요계정이 아닌 전체 계정과목을 받고 싶다면 이 엔드포인트를 사용. fs_div가 필수이며 응답 row 수가 훨씬 많음(수백 건)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. fnlttSinglIndx.json — 단일회사 주요재무지표",
+      "description": "단일회사의 분기별 주요재무지표(ROE, 영업이익률, 부채비율 등)를 조회합니다. DART가 직접 계산해서 제공하므로 자체 계산이 불필요합니다.\n\n**한 호출 = 한 (corp, year, reprt, idx_cl) 조합**. idx_cl_code별로 따로 호출해야 하므로, 한 회사·한 분기 전체 지표를 받으려면 4번 호출 필요.\n\n주요 응답 필드:\n- `idx_cl_code` (분류 코드)\n- `idx_cl_nm` (분류명)\n- `idx_code` (개별 지표 코드)\n- `idx_nm` (지표명, 예: ROE·영업이익률·부채비율)\n- `thstrm_value` (당기 값, % 또는 비율)\n- `frmtrm_value` / `bfefrmtrm_value` (전기/전전기)\n\n**주의**:\n- 데이터 커버리지가 fnlttSinglAcnt보다 좁음 — 분기 보고서에는 거의 없고 사업보고서(11011)에 집중.\n- fs_div는 응답에 포함되지만 요청 파라미터에서는 받지 않음(엔드포인트마다 동작 차이가 있어 실험 권장).\n- status `013`(데이터 없음) 응답이 흔함.",
+      "item": [
+        {
+          "name": "fnlttSinglIndx — 수익성지표 (M210000)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/fnlttSinglIndx.json?crtfc_key={{crtfc_key}}&corp_code={{corp_code}}&bsns_year={{bsns_year}}&reprt_code=11011&idx_cl_code=M210000",
+              "host": ["{{base_url}}"],
+              "path": ["fnlttSinglIndx.json"],
+              "query": [
+                {"key": "crtfc_key", "value": "{{crtfc_key}}"},
+                {"key": "corp_code", "value": "{{corp_code}}"},
+                {"key": "bsns_year", "value": "{{bsns_year}}"},
+                {
+                  "key": "reprt_code",
+                  "value": "11011",
+                  "description": "사업보고서가 가장 데이터 풍부"
+                },
+                {
+                  "key": "idx_cl_code",
+                  "value": "M210000",
+                  "description": "M210000=수익성"
+                }
+              ]
+            },
+            "description": "ROE, ROA, 영업이익률, 매출총이익률, 당기순이익률 등."
+          },
+          "response": []
+        },
+        {
+          "name": "fnlttSinglIndx — 안정성지표 (M220000)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/fnlttSinglIndx.json?crtfc_key={{crtfc_key}}&corp_code={{corp_code}}&bsns_year={{bsns_year}}&reprt_code=11011&idx_cl_code=M220000",
+              "host": ["{{base_url}}"],
+              "path": ["fnlttSinglIndx.json"],
+              "query": [
+                {"key": "crtfc_key", "value": "{{crtfc_key}}"},
+                {"key": "corp_code", "value": "{{corp_code}}"},
+                {"key": "bsns_year", "value": "{{bsns_year}}"},
+                {"key": "reprt_code", "value": "11011"},
+                {
+                  "key": "idx_cl_code",
+                  "value": "M220000",
+                  "description": "M220000=안정성"
+                }
+              ]
+            },
+            "description": "부채비율, 유동비율, 자기자본비율, 차입금의존도 등."
+          },
+          "response": []
+        },
+        {
+          "name": "fnlttSinglIndx — 성장성지표 (M230000)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/fnlttSinglIndx.json?crtfc_key={{crtfc_key}}&corp_code={{corp_code}}&bsns_year={{bsns_year}}&reprt_code=11011&idx_cl_code=M230000",
+              "host": ["{{base_url}}"],
+              "path": ["fnlttSinglIndx.json"],
+              "query": [
+                {"key": "crtfc_key", "value": "{{crtfc_key}}"},
+                {"key": "corp_code", "value": "{{corp_code}}"},
+                {"key": "bsns_year", "value": "{{bsns_year}}"},
+                {"key": "reprt_code", "value": "11011"},
+                {
+                  "key": "idx_cl_code",
+                  "value": "M230000",
+                  "description": "M230000=성장성"
+                }
+              ]
+            },
+            "description": "매출액증가율, 영업이익증가율, 총자산증가율 등."
+          },
+          "response": []
+        },
+        {
+          "name": "fnlttSinglIndx — 활동성지표 (M240000)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/fnlttSinglIndx.json?crtfc_key={{crtfc_key}}&corp_code={{corp_code}}&bsns_year={{bsns_year}}&reprt_code=11011&idx_cl_code=M240000",
+              "host": ["{{base_url}}"],
+              "path": ["fnlttSinglIndx.json"],
+              "query": [
+                {"key": "crtfc_key", "value": "{{crtfc_key}}"},
+                {"key": "corp_code", "value": "{{corp_code}}"},
+                {"key": "bsns_year", "value": "{{bsns_year}}"},
+                {"key": "reprt_code", "value": "11011"},
+                {
+                  "key": "idx_cl_code",
+                  "value": "M240000",
+                  "description": "M240000=활동성"
+                }
+              ]
+            },
+            "description": "총자산회전율, 재고자산회전율, 매출채권회전율 등."
+          },
+          "response": []
+        },
+        {
+          "name": "fnlttSinglIndx — 분기 보고서 테스트 (디버깅용)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/fnlttSinglIndx.json?crtfc_key={{crtfc_key}}&corp_code={{corp_code}}&bsns_year={{bsns_year}}&reprt_code=11013&idx_cl_code=M210000",
+              "host": ["{{base_url}}"],
+              "path": ["fnlttSinglIndx.json"],
+              "query": [
+                {"key": "crtfc_key", "value": "{{crtfc_key}}"},
+                {"key": "corp_code", "value": "{{corp_code}}"},
+                {"key": "bsns_year", "value": "{{bsns_year}}"},
+                {
+                  "key": "reprt_code",
+                  "value": "11013",
+                  "description": "Q1 — 데이터 없을 가능성 높음 (status 013 예상)"
+                },
+                {"key": "idx_cl_code", "value": "M210000"}
+              ]
+            },
+            "description": "분기 지표는 종종 status=013으로 응답됨. dart_indicators 컬렉터의 empty 이슈 디버깅용."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
