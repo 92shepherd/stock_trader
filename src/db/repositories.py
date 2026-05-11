@@ -47,6 +47,11 @@ DAILY_COLUMNS = [
     "per", "pbr", "dividend_yield",
 ]
 
+DAILY_RAW_COLUMNS = [
+    "symbol", "date", "open", "high", "low", "close",
+    "volume", "value",
+]
+
 
 def upsert_daily_prices(df: pd.DataFrame) -> int:
     """Bulk upsert daily_prices via COPY + ON CONFLICT.
@@ -90,6 +95,56 @@ def upsert_daily_prices(df: pd.DataFrame) -> int:
             cur.execute(
                 f"INSERT INTO daily_prices ({col_list}) "
                 f"SELECT {col_list} FROM tmp_daily "
+                f"ON CONFLICT (symbol, date) DO UPDATE SET {update_clause}"
+            )
+            affected = cur.rowcount
+    return affected
+
+
+def upsert_daily_prices_raw(df: pd.DataFrame) -> int:
+    """Bulk upsert daily_prices_raw via COPY + ON CONFLICT.
+
+    Mirrors `upsert_daily_prices` but writes the unadjusted (raw) OHLCV
+    table populated by daily_kis collector with FID_ORG_ADJ_PRC=1.
+
+    Expects df columns to be a subset of DAILY_RAW_COLUMNS
+    (symbol, date, open, high, low, close, volume, value).
+    Missing columns will be NULLed out.
+
+    No fundamentals (market_cap/per/pbr/...) here — those live only in
+    daily_prices because they're price-adjustment-independent.
+    """
+    if df.empty:
+        return 0
+
+    for col in DAILY_RAW_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[DAILY_RAW_COLUMNS].copy()
+
+    buf = StringIO()
+    df.to_csv(buf, index=False, header=False, sep="\t", na_rep="\\N")
+    buf.seek(0)
+
+    col_list = ", ".join(DAILY_RAW_COLUMNS)
+    update_cols = [c for c in DAILY_RAW_COLUMNS if c not in ("symbol", "date")]
+    update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+
+    with raw_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TEMP TABLE tmp_daily_raw "
+                "(LIKE daily_prices_raw INCLUDING DEFAULTS) "
+                "ON COMMIT DROP"
+            )
+            with cur.copy(
+                f"COPY tmp_daily_raw ({col_list}) FROM STDIN "
+                f"WITH (FORMAT CSV, DELIMITER E'\\t', NULL '\\N')"
+            ) as copy:
+                copy.write(buf.read())
+            cur.execute(
+                f"INSERT INTO daily_prices_raw ({col_list}) "
+                f"SELECT {col_list} FROM tmp_daily_raw "
                 f"ON CONFLICT (symbol, date) DO UPDATE SET {update_clause}"
             )
             affected = cur.rowcount

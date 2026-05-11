@@ -70,6 +70,30 @@ class DailyPrice(Base):
     dividend_yield: Mapped[Decimal | None] = mapped_column(Numeric(6, 3), nullable=True)
 
 
+class DailyPriceRaw(Base):
+    """원주가(unadjusted) OHLCV.
+
+    daily_prices(수정주가 + fundamentals)와 분리된 테이블. 액면분할/병합
+    등 권리 발생 이전의 raw 가격을 보존. KIS API FID_ORG_ADJ_PRC=1로 수집.
+
+    펀더멘털(시총/PER/PBR/투자자흐름)은 가격 조정 여부와 무관하므로
+    여기에 두지 않고 daily_prices 한 곳에만 저장한다. 통합 조회는
+    v_daily_prices_full 뷰 사용.
+
+    Managed by migrations/011_daily_prices_raw.sql (hypertable + compression).
+    """
+    __tablename__ = "daily_prices_raw"
+
+    symbol: Mapped[str] = mapped_column(String(10), primary_key=True)
+    date: Mapped[date] = mapped_column(Date, primary_key=True)
+    open: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    high: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    low: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    close: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    value: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
 class MinutePrice(Base):
     __tablename__ = "minute_prices"
 
