@@ -276,7 +276,7 @@ async def trigger_dart_indicators(
 )
 async def trigger_daily_cron(req: DailyCronRequest) -> JobAcceptedResponse:
     record = await submit_daily_cron(
-        end_date=req.date,
+        end_date=req.end_date,
         days=req.days,
         only=req.only,
         fetch_snapshot=req.fetch_snapshot,

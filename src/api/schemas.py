@@ -275,7 +275,7 @@ class DailyCronRequest(BaseModel):
     job. Same defaults: yesterday, 1-day window, snapshot on.
     """
 
-    date: date | None = Field(
+    end_date: date | None = Field(
         None,
         description=(
             "Target end date. None = yesterday (matches the 03:00 cron's "
