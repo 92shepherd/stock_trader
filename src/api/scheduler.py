@@ -8,10 +8,14 @@ What this replaces:
 
 How it integrates with the locks layer:
     The scheduled job dispatches through `runners.submit_daily_cron`,
-    which acquires `CollectorName.DAILY_CRON`. Any manual API trigger
-    for the same composite job (or, depending on how routers are wired,
-    for `daily_kis` / `dart_*` while the cron holds DAILY_CRON) gets
-    rejected with `CollectorBusy` \u2192 409.
+    which acquires `CollectorName.DAILY_CRON`. The composite now bundles
+    KIS daily prices + DART corp_codes/disclosures + FnGuide consensus.
+    The FnGuide step auto-skips when `FNGUIDE_CONSENT_ACK` is not set
+    to 1 in .env (silent skip, not a failure).
+
+    Any manual API trigger for the composite OR any inner collector
+    (daily_kis, dart_*, consensus_fnguide) gets rejected with
+    `CollectorBusy` while DAILY_CRON is held.
 
 What this is NOT:
     - It is not a generic task queue. Async API submissions go through
@@ -72,18 +76,21 @@ def _timezone_name() -> str:
 
 
 async def _scheduled_daily_cron() -> None:
-    """Body of the 03:00 KST job. Equivalent to `python -m src.main`.
+    """Body of the 03:00 KST job. Composite KIS + DART + FnGuide.
 
-    Defaults match the old cron exactly: end_date=yesterday, days=1,
-    snapshot on, skip_done on, no `only` filter so both KIS and DART
-    run. We submit through `runners.submit_daily_cron`, which means:
+    Defaults: end_date=yesterday, days=1, snapshot on, skip_done on,
+    no `only` filter so all three composite steps run. The FnGuide
+    step itself self-disables without FNGUIDE_CONSENT_ACK=1, so this
+    job is safe to run on installs that haven't opted into FnGuide.
+
+    Submits through `runners.submit_daily_cron`, which means:
       - A JobRecord is created so /jobs/{id} can show progress.
       - The DAILY_CRON lock is acquired (or the run is rejected if a
         manual trigger is already holding it).
       - Failures are captured in the record's `error` field AND in the
         normal loguru logs.
     """
-    logger.info("[scheduler] firing daily KIS+DART cron")
+    logger.info("[scheduler] firing daily composite cron (KIS+DART+FnGuide)")
     try:
         record = await submit_daily_cron()
         logger.info(
@@ -126,7 +133,7 @@ def build_scheduler() -> AsyncIOScheduler:
 
 
 def register_default_jobs(scheduler: AsyncIOScheduler) -> list[dict[str, Any]]:
-    """Wire up the default 03:00 KST KIS+DART job.
+    """Wire up the default 03:00 KST composite cron job.
 
     Returns a list of registration descriptors (id, cron) for logging.
     Idempotent: if the job is already registered, it gets replaced
@@ -138,7 +145,7 @@ def register_default_jobs(scheduler: AsyncIOScheduler) -> list[dict[str, Any]]:
         _scheduled_daily_cron,
         trigger=trigger,
         id=JOB_ID_DAILY_CRON,
-        name="Daily KIS+DART backfill (replaces main.py cron)",
+        name="Daily composite backfill (KIS + DART + FnGuide consensus)",
         replace_existing=True,
     )
     return [{"id": JOB_ID_DAILY_CRON, "cron": cron_expr}]

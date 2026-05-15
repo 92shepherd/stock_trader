@@ -21,11 +21,13 @@ from __future__ import annotations
 
 # .env first \u2014 same reason as app.py. load_dotenv() is idempotent so
 # this is safe even though app.py does it too.
+# override=True — see app.py 의 동일 호출에 달린 주석 참고. 세션의
+# (혹은 빈 값의) 기존 환경변수보다 .env 파일을 우선.
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 
 import argparse  # noqa: E402
 import os  # noqa: E402

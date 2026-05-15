@@ -264,15 +264,72 @@ class DartIndicatorsRequest(DartFinancialsRequest):
 
 
 # ---------------------------------------------------------------------------
+# Consensus collectors (async \u2014 long-running)
+# ---------------------------------------------------------------------------
+
+
+class ConsensusFnguideRequest(BaseModel):
+    """POST /collect/consensus/fnguide — FnGuide 일 스냅샷 (개인용).
+
+    Date model:
+        `as_of_date` 가 스냅샷 날짜. None 이면 수집기가 오늘로
+        결정. 같은 날짜를 다시 상단해도 PK 잠금 (symbol, as_of_date,
+        fiscal_period) 로 멱등성 보장.
+
+    사전 조건:
+        .env 에 FNGUIDE_CONSENT_ACK=1 이 설정되어 있어야 함. 없으면
+        제출된 job 은 'failed' 로 마킹되며 error 필드에 안내 문구가 남는다.
+    """
+
+    symbols: list[str] | None = Field(
+        None,
+        description=(
+            "특정 6자리 종목코드 리스트. None 이면 `tickers` 테이블의 전테 활성 종목."
+        ),
+    )
+    as_of_date: date | None = Field(
+        None,
+        description="스냅샷 날짜 (YYYY-MM-DD). None = 오늘.",
+    )
+    markets: list[str] | None = Field(
+        None,
+        description="전 종목 모드에서 대상 시장. 예: ['KOSPI', 'KOSDAQ']. None = config.",
+    )
+    skip_done: bool = True
+    request_delay: float | None = Field(
+        None,
+        ge=0.0,
+        le=10.0,
+        description=(
+            "요청 간 sleep (초). None = max(cfg.daily.request_delay, 1.0). "
+            "FnGuide 서버 매너 차원에서 최소 1이 권장됨."
+        ),
+    )
+
+    @field_validator("symbols")
+    @classmethod
+    def _zero_pad(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        return [s.strip().zfill(6) for s in v if s and s.strip()]
+
+
+# ---------------------------------------------------------------------------
 # Composite: the default daily cron (POST /collect/daily-cron)
 # ---------------------------------------------------------------------------
 
 
 class DailyCronRequest(BaseModel):
-    """POST /collect/daily-cron \u2014 KIS daily + DART disclosures.
+    """POST /collect/daily-cron \u2014 KIS daily + DART + FnGuide consensus.
 
     Re-implements `python -m src.main`'s logic as an HTTP-triggerable
-    job. Same defaults: yesterday, 1-day window, snapshot on.
+    job, extended with the FnGuide consensus snapshot step. Same
+    defaults: yesterday, 1-day window, snapshot on.
+
+    Note on FnGuide step:
+        Runs only if .env has FNGUIDE_CONSENT_ACK=1. Without consent
+        the step is silently skipped (summary['fnguide_consensus'] =
+        'skipped_no_consent') — not treated as a failure.
     """
 
     end_date: date | None = Field(
@@ -283,7 +340,13 @@ class DailyCronRequest(BaseModel):
         ),
     )
     days: int = Field(1, ge=1, le=30)
-    only: Literal["kis", "dart"] | None = None
+    only: Literal["kis", "dart", "fnguide"] | None = Field(
+        None,
+        description=(
+            "Narrow to a single step. None = run all three (KIS + DART + "
+            "FnGuide consensus)."
+        ),
+    )
     fetch_snapshot: bool = True
     skip_done: bool = True
 
@@ -339,6 +402,7 @@ __all__ = [
     "DartDisclosuresRequest",
     "DartFinancialsRequest",
     "DartIndicatorsRequest",
+    "ConsensusFnguideRequest",
     "DailyCronRequest",
     # scheduler
     "ScheduleEntry",

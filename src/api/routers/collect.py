@@ -31,6 +31,7 @@ from src.api.runners import (
     run_dart_corp_codes,
     run_tickers_kr,
     run_tickers_us,
+    submit_consensus_fnguide,
     submit_daily_cron,
     submit_daily_fdr,
     submit_daily_kis,
@@ -40,6 +41,7 @@ from src.api.runners import (
     submit_dart_indicators,
 )
 from src.api.schemas import (
+    ConsensusFnguideRequest,
     DailyCronRequest,
     DailyFDRRequest,
     DailyKISRequest,
@@ -259,6 +261,38 @@ async def trigger_dart_indicators(
         corp_codes=req.corp_codes,
         skip_done=req.skip_done,
         max_calls=req.max_calls,
+    )
+    return _job_accepted(record)
+
+
+# ===========================================================================
+# Consensus collectors
+# ===========================================================================
+
+
+@router.post(
+    "/consensus/fnguide",
+    response_model=JobAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="FnGuide consensus snapshot (개인용 비공개 한정)",
+)
+async def trigger_consensus_fnguide(
+    req: ConsensusFnguideRequest,
+) -> JobAcceptedResponse:
+    """FnGuide 컨센서스 일 스냅샷 수집 트리거.
+
+    명시적 주의:
+        FnGuide 약관은 데이터베이스화 제한 조항이 있어 본 엔드포인트는
+        **개인 트레이딩 시스템의 비공개 사용** 한정. .env 에
+        FNGUIDE_CONSENT_ACK=1 이 없으면 collector 가 RuntimeError 로
+        거부하고 job 은 'failed' 로 마킹됨.
+    """
+    record = await submit_consensus_fnguide(
+        symbols=req.symbols,
+        as_of_date=req.as_of_date,
+        markets=req.markets,
+        skip_done=req.skip_done,
+        request_delay=req.request_delay,
     )
     return _job_accepted(record)
 

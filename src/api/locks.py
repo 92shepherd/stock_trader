@@ -80,9 +80,15 @@ class CollectorName(str, Enum):
     DART_FINANCIALS = "dart_financials"
     DART_INDICATORS = "dart_indicators"
 
-    # Composite — the default daily cron (KIS + DART together).
-    # Holds the union of DAILY_KIS + DART_CORP_CODES + DART_DISCLOSURES
-    # so manual triggers for any of those will 409 while the cron runs.
+    # Consensus / analyst data
+    CONSENSUS_FNGUIDE = "consensus_fnguide"
+
+    # Composite — the default daily cron (KIS + DART + FnGuide consensus).
+    # Holds while any of the three composite steps is running so manual
+    # triggers for daily_kis / dart_* / consensus_fnguide will 409 during
+    # the cron's window. The inner collectors do NOT acquire their own
+    # locks (they're called directly from _daily_cron_blocking), so this
+    # composite lock is the only thing guarding them during the cron.
     DAILY_CRON = "daily_cron"
 
 

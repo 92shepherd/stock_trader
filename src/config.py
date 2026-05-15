@@ -56,6 +56,28 @@ class KISSettings(BaseSettings):
     kis_mode: str = "paper"  # paper | real
 
 
+class FnguideSettings(BaseSettings):
+    """FnGuide 스크래퍼 설정 — 개인용 비공개 한정.
+
+    consent_ack 가 '1' 이 아니면 src/collectors/consensus_fnguide.py 의
+    _consent_check() 가 RuntimeError 로 거부한다. 자세한 정책은 해당
+    모듈의 docstring 참고.
+
+    이 설정을 raw `os.environ.get()` 이 아니라 pydantic-settings 로
+    로딩하는 이유: 다른 설정들과 동일한 경로로 읽혀서, load_dotenv()
+    호출 순서나 세션 환경변수 잔재에 구애받지 않음. .env 의 keys 적재
+        FNGUIDE_CONSENT_ACK=1
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    fnguide_consent_ack: str = ""
+
+    @property
+    def consent_ack(self) -> bool:
+        return self.fnguide_consent_ack.strip() == "1"
+
+
 class DartSettings(BaseSettings):
     """DART OpenAPI credentials & policy.
 
@@ -121,6 +143,11 @@ def get_db_settings() -> DBSettings:
 @lru_cache
 def get_kis_settings() -> KISSettings:
     return KISSettings()
+
+
+@lru_cache
+def get_fnguide_settings() -> FnguideSettings:
+    return FnguideSettings()
 
 
 @lru_cache

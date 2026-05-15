@@ -20,11 +20,16 @@ from __future__ import annotations
 
 # .env first \u2014 BEFORE any src.* import that may read env vars at module
 # scope (DB_*, KIS_*, DART_API_KEY, STOCK_TRADER_API_KEY).
+#
+# override=True 은 의도적: 세션에 이전에 설정된 (혹은 빈 값으로 남은) 동일한
+# 환경변수가 있을 때에도 .env 파일을 권위 있는 소스로 삼는다. 이렇게
+# 하지 않으면 예: PowerShell 세션에서 FNGUIDE_CONSENT_ACK=""가 먼저 설정된
+# 경우 .env 의 =1 이 묵인다.
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 
 from contextlib import asynccontextmanager  # noqa: E402
 from typing import AsyncIterator  # noqa: E402

@@ -364,6 +364,51 @@ class DartIndicator(Base):
         )
 
 
+class ConsensusEstimate(Base):
+    """Analyst consensus estimates daily snapshot (FnGuide).
+
+    Source: comp.fnguide.com SVD_Consensus page (개인용 비공개 한정)
+
+    Data model:
+        매일 1회 (장 마감 후) 전 종목 × (FQ1~4 + FY1~2) 스냅샷.
+        같은 (symbol, fiscal_period) 에 대해 매일 새 row 가 누적되어
+        추정치 변경 (estimate revision) 을 시계열로 추적.
+
+    Primary key:
+        (symbol, as_of_date, fiscal_period)
+        - as_of_date 가 hypertable 의 시간축.
+        - fiscal_period 스타일: 'YYYYQn' (분기) 또는 'FYYYYY' (연간).
+
+    Managed by migrations/012_consensus_fnguide.sql
+    """
+    __tablename__ = "consensus_estimates"
+
+    symbol: Mapped[str] = mapped_column(String(10), primary_key=True)
+    as_of_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    fiscal_period: Mapped[str] = mapped_column(String(10), primary_key=True)
+    fiscal_period_type: Mapped[str] = mapped_column(String(10))
+
+    eps_estimate: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    revenue_estimate: Mapped[Decimal | None] = mapped_column(Numeric(20, 0), nullable=True)
+    op_income_estimate: Mapped[Decimal | None] = mapped_column(Numeric(20, 0), nullable=True)
+    net_income_estimate: Mapped[Decimal | None] = mapped_column(Numeric(20, 0), nullable=True)
+
+    target_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    opinion: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    n_estimates: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    source: Mapped[str] = mapped_column(String(20), default="fnguide")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<ConsensusEstimate {self.symbol} {self.as_of_date} "
+            f"{self.fiscal_period} eps={self.eps_estimate}>"
+        )
+
+
 class CollectionLog(Base):
     __tablename__ = "collection_log"
 

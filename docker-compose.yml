@@ -96,6 +96,14 @@ services:
       KRX_PW: ${KRX_PW:-}
       DART_API_KEY: ${DART_API_KEY:-}
 
+      # --- FnGuide consensus scraper (개인용 비공개 한정) ---
+      # 호스트 .env 의 FNGUIDE_CONSENT_ACK 값이 "1" 이어야 consensus_fnguide
+      # collector 가 실행되며, 그 외에는 RuntimeError 로 거부. 이 코드의
+      # 조건·의미에 대한 자세한 설명은 src/collectors/consensus_fnguide.py
+      # 모듈 docstring 참고. 기본값이 빈 문자열이므로 호스트 .env 에
+      # 설정되지 않은 운영자는 자동으로 FnGuide 스크래이핑이 비활성화됨.
+      FNGUIDE_CONSENT_ACK: ${FNGUIDE_CONSENT_ACK:-}
+
       # --- API server settings ---
       STOCK_TRADER_API_KEY: ${STOCK_TRADER_API_KEY:?STOCK_TRADER_API_KEY is required \u2014 set it in .env}
       # Bind on 0.0.0.0 inside the container; compose's `ports:` below

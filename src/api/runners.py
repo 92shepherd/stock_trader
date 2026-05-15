@@ -375,7 +375,6 @@ async def submit_dart_disclosures(
 
 # ----- DART financials & indicators (async, very long) -----
 
-
 async def submit_dart_financials(
     *,
     start_year: int = 2020,
@@ -455,7 +454,61 @@ async def submit_dart_indicators(
     )
 
 
-# ----- Composite: daily cron (KIS + DART) -----
+# ----- FnGuide consensus (async, long) -----
+
+
+async def submit_consensus_fnguide(
+    *,
+    symbols: list[str] | None = None,
+    as_of_date: date | None = None,
+    markets: list[str] | None = None,
+    skip_done: bool = True,
+    request_delay: float | None = None,
+) -> JobRecord:
+    """FnGuide consensus snapshot for one as_of_date.
+
+    개인용 비공개 한정. 자세한 정책은
+    src/collectors/consensus_fnguide.py 모듈 docstring 참고. .env 에
+    FNGUIDE_CONSENT_ACK=1 이 없으면 collector 가 RuntimeError 로 거부하고,
+    그 예외는 이 함수의 _run_async_locked 이 잡아서 JobRecord 를
+    'failed' 로 마킹한다.
+
+    Implementation note:
+        CLI 와 동일하게 symbols 의 유무에 따라 backfill_symbols 또는
+        backfill_active_universe 을 선택. as_of_date 는 None 이면
+        수집기가 자체적으로 오늘로 결정함.
+    """
+    from src.collectors.consensus_fnguide import (
+        backfill_active_universe,
+        backfill_symbols,
+    )
+
+    params: dict[str, Any] = {
+        "symbols": symbols,
+        "as_of_date": as_of_date.isoformat() if as_of_date else None,
+        "markets": markets,
+        "skip_done": skip_done,
+        "request_delay": request_delay,
+    }
+
+    if symbols:
+        return await _run_async_locked(
+            CollectorName.CONSENSUS_FNGUIDE, params, backfill_symbols,
+            symbols=symbols, as_of_date=as_of_date,
+            skip_done=skip_done, request_delay=request_delay,
+        )
+    return await _run_async_locked(
+        CollectorName.CONSENSUS_FNGUIDE, params, backfill_active_universe,
+        as_of_date=as_of_date, markets=markets,
+        skip_done=skip_done, request_delay=request_delay,
+    )
+
+
+# ----- Composite: daily cron (KIS + DART + FnGuide consensus) -----
+
+
+# Recognized `only` values for the composite cron. None = run all three.
+_DAILY_CRON_ONLY_VALUES = (None, "kis", "dart", "fnguide")
 
 
 def _daily_cron_blocking(
@@ -466,11 +519,19 @@ def _daily_cron_blocking(
     fetch_snapshot: bool,
     skip_done: bool,
 ) -> dict[str, Any]:
-    """Run the same two-step sequence as `python -m src.main` did.
+    """Run the composite daily backfill (KIS + DART + FnGuide consensus).
 
-    Lives in this module rather than reaching into src.main so the API
-    layer owns its own runtime contract. Failures in step 1 don't block
-    step 2 (matches main.py's design).
+    Each step is isolated: a failure in one does NOT block the others.
+    The shared `DAILY_CRON` lock (held by `submit_daily_cron`) keeps
+    parallel triggers of the same composite from colliding, but the
+    inner collectors are called directly here — they don't reacquire
+    their own locks.
+
+    The FnGuide step refuses to run unless `FNGUIDE_CONSENT_ACK=1` is
+    set in .env. That refusal is treated as a soft skip (recorded in
+    `summary['fnguide_consensus']` as 'skipped_no_consent') rather than
+    a failure, because not every operator of this code base will have
+    opted into the FnGuide scrape.
     """
     from datetime import timedelta
 
@@ -488,6 +549,7 @@ def _daily_cron_blocking(
         "kis": None,
         "dart_corp_codes": None,
         "dart_disclosures": None,
+        "fnguide_consensus": None,
         "errors": [],
     }
 
@@ -533,6 +595,38 @@ def _daily_cron_blocking(
             summary["errors"].append(f"dart_disclosures: {e}")
             logger.exception(f"[daily-cron] DART disclosures failed: {e}")
 
+    # --- FnGuide consensus step ---
+    # 개인용 비공개 수집이므로 .env 의 FNGUIDE_CONSENT_ACK=1 이 없으면
+    # 조용히 건너뛴. 에러로 기록하지 않는다 — KIS/DART 만 쓰는 운영자가
+    # cron 에서 항상 "failed" 를 보게 되는 것은 잡음.
+    if only in (None, "fnguide"):
+        from src.config import get_fnguide_settings
+        if not get_fnguide_settings().consent_ack:
+            summary["fnguide_consensus"] = "skipped_no_consent"
+            logger.info(
+                "[daily-cron] FnGuide step skipped: "
+                "FNGUIDE_CONSENT_ACK not set to 1 in .env"
+            )
+        else:
+            from src.collectors.consensus_fnguide import (
+                backfill_active_universe as fnguide_backfill,
+            )
+            try:
+                # as_of_date = 수집기 자체 기본값 = 오늘. cron 이 03:00 KST 에
+                # 돌면 '오늘' 은 장 시작 전 새벽을 포함하며, 이건 의도된
+                # 동작 — 어제 발행된 리포트의 최종 컨센서스가 이 시간에 반영됨.
+                fnguide_result = fnguide_backfill(
+                    as_of_date=None,
+                    skip_done=skip_done,
+                )
+                summary["fnguide_consensus"] = fnguide_result
+            except Exception as e:  # noqa: BLE001
+                summary["fnguide_consensus"] = "failed"
+                summary["errors"].append(f"fnguide_consensus: {e}")
+                logger.exception(
+                    f"[daily-cron] FnGuide consensus step failed: {e}"
+                )
+
     return summary
 
 
@@ -546,12 +640,18 @@ async def submit_daily_cron(
 ) -> JobRecord:
     """Async submit of the composite daily cron job.
 
+    Composition: KIS daily prices + DART corp_codes/disclosures +
+    FnGuide consensus snapshot. Each step is independent; one failure
+    does not abort the others. The `only` parameter narrows to a single
+    step ("kis" | "dart" | "fnguide"); None = run all three.
+
     Uses the `DAILY_CRON` lock to serialize against itself only. Inner
     collectors do NOT take their own locks because they're called
     directly from `_daily_cron_blocking` inside this lock. To prevent a
-    user from manually triggering `daily_kis` mid-cron, the routes for
-    those individual collectors should ALSO try-acquire `DAILY_CRON`
-    \u2014 see how `run_*` are wired in src/api/routers/collect.py.
+    user from manually triggering `daily_kis` or `consensus_fnguide`
+    mid-cron, the routes for those individual collectors should ALSO
+    try-acquire `DAILY_CRON` \u2014 see how `run_*` are wired in
+    src/api/routers/collect.py.
     """
     from datetime import date as _date, timedelta as _timedelta
 
@@ -582,5 +682,6 @@ __all__ = [
     "submit_dart_disclosures",
     "submit_dart_financials",
     "submit_dart_indicators",
+    "submit_consensus_fnguide",
     "submit_daily_cron",
 ]

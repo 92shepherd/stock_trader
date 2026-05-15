@@ -17,6 +17,7 @@ from sqlalchemy import select, text
 from src.db.connection import raw_connection, session_scope
 from src.db.models import (
     CollectionLog,
+    ConsensusEstimate,
     DartCorpCode,
     DartDisclosure,
     DartFinancial,
@@ -614,6 +615,110 @@ def get_completed_dart_indicators_keys(
         return {
             r[0] for r in session.execute(
                 stmt, {"y": bsns_year, "r": reprt_code, "f": fs_div}
+            ).all()
+        }
+
+
+# -------------------- Consensus estimates (FnGuide) --------------------
+
+# Column order MUST match migrations/012_consensus_fnguide.sql CREATE TABLE.
+CONSENSUS_COLUMNS = [
+    "symbol",
+    "as_of_date",
+    "fiscal_period",
+    "fiscal_period_type",
+    "eps_estimate",
+    "revenue_estimate",
+    "op_income_estimate",
+    "net_income_estimate",
+    "target_price",
+    "opinion",
+    "n_estimates",
+    "source",
+]
+
+_CONSENSUS_PK = ("symbol", "as_of_date", "fiscal_period")
+
+
+def upsert_consensus_estimates(df: pd.DataFrame) -> int:
+    """Bulk upsert consensus_estimates via COPY + ON CONFLICT.
+
+    Expects df columns to be a subset of CONSENSUS_COLUMNS. Missing
+    columns are NULLed out (except non-nullable fiscal_period_type and
+    source, which the caller must always supply).
+
+    Re-run safety: PK is (symbol, as_of_date, fiscal_period), so the
+    same day's collection can be re-run safely.
+    """
+    if df.empty:
+        return 0
+
+    for col in CONSENSUS_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[CONSENSUS_COLUMNS].copy()
+
+    buf = StringIO()
+    df.to_csv(buf, index=False, header=False, sep="\t", na_rep="\\N")
+    buf.seek(0)
+
+    col_list = ", ".join(CONSENSUS_COLUMNS)
+    update_cols = [c for c in CONSENSUS_COLUMNS if c not in _CONSENSUS_PK]
+    update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+
+    with raw_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TEMP TABLE tmp_consensus "
+                "(LIKE consensus_estimates INCLUDING DEFAULTS) "
+                "ON COMMIT DROP"
+            )
+            with cur.copy(
+                f"COPY tmp_consensus ({col_list}) FROM STDIN "
+                f"WITH (FORMAT CSV, DELIMITER E'\\t', NULL '\\N')"
+            ) as copy:
+                copy.write(buf.read())
+            cur.execute(
+                f"INSERT INTO consensus_estimates ({col_list}) "
+                f"SELECT {col_list} FROM tmp_consensus "
+                f"ON CONFLICT (symbol, as_of_date, fiscal_period) "
+                f"DO UPDATE SET {update_clause}"
+            )
+            affected = cur.rowcount
+    return affected
+
+
+def get_completed_symbols_on_date(
+    collector: str,
+    as_of_date: date,
+) -> set[str]:
+    """Return symbols already collected on `as_of_date` for `collector`.
+
+    Used by daily-snapshot collectors (e.g. consensus_fnguide) to resume
+    an interrupted run. A symbol counts as 'done' iff there's a success
+    log entry with target_date = as_of_date AND rows_inserted > 0.
+
+    Different from `get_completed_symbols_in_range`:
+        - That one is for symbol-iterating range-backfills where the
+          range's `end` date is used as the log marker.
+        - This one is for daily snapshots where each day is one
+          target_date and each symbol gets exactly one log row per day.
+        - Functionally similar; kept separate so the caller's intent is
+          self-documenting at call sites.
+    """
+    with session_scope() as session:
+        stmt = text("""
+            SELECT DISTINCT symbol
+              FROM collection_log
+             WHERE collector = :col
+               AND status    = 'success'
+               AND target_date = :as_of
+               AND symbol IS NOT NULL
+               AND rows_inserted > 0
+        """)
+        return {
+            r[0] for r in session.execute(
+                stmt, {"col": collector, "as_of": as_of_date}
             ).all()
         }
 
