@@ -1,3 +1,30 @@
+# =============================================================================
+# stock_trader \u2014 production compose stack
+# -----------------------------------------------------------------------------
+# Two services on an internal network:
+#   - timescaledb : data store (NOT published to the host by default)
+#   - api         : FastAPI + in-process APScheduler (published on API_PORT)
+#
+# Lifespan ordering:
+#   1. timescaledb starts and becomes "healthy" (pg_isready loop)
+#   2. api waits via depends_on.condition: service_healthy
+#   3. api startup runs migrations, then starts the scheduler
+#
+# Volumes:
+#   data/pgdata      \u2192 Timescale data dir (durable)
+#   data/logs        \u2192 loguru rotated log files
+#   data/kis         \u2192 KIS OAuth token cache (preserves 24h token across rebuilds)
+#   docs_cache       \u2192 OpenDartReader corp_codes pickle cache
+#
+# Run:
+#   docker compose up -d
+#   docker compose logs -f api
+#   docker compose down
+#
+# Rebuild after code changes:
+#   docker compose build api && docker compose up -d api
+# =============================================================================
+
 services:
   timescaledb:
     image: timescale/timescaledb:latest-pg16
@@ -8,8 +35,11 @@ services:
       POSTGRES_USER: ${DB_USER:-stock}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
       TZ: Asia/Seoul
-    ports:
-      - "${DB_PORT:-5432}:5432"
+    # No `ports:` block on purpose \u2014 the DB is reachable only on the
+    # internal compose network. The api service connects via the
+    # service name `timescaledb` (Docker DNS). If you need host access
+    # for psql/DBeaver during dev, use docker-compose.dev.yml which
+    # re-adds a 127.0.0.1 publish.
     volumes:
       - ./data/pgdata:/var/lib/postgresql/data
     command: >
@@ -25,3 +55,96 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
+    networks:
+      - stock_net
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: stock_trader_api:latest
+    container_name: stock_trader_api
+    restart: unless-stopped
+    depends_on:
+      timescaledb:
+        # `service_healthy` (not just `service_started`) is critical:
+        # the api's lifespan runs migrations on startup, which need the
+        # DB ready to accept connections. Without this, the first boot
+        # races the DB and migrations fail with "Connection refused".
+        condition: service_healthy
+    environment:
+      # --- DB connection (override the .env defaults so the api can
+      # reach Timescale by its compose service name, not localhost) ---
+      DB_HOST: timescaledb
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-stockdata}
+      DB_USER: ${DB_USER:-stock}
+      DB_PASSWORD: ${DB_PASSWORD:-changeme}
+
+      # --- KIS / DART / KRX credentials passed through from host .env ---
+      # If a variable is unset on the host, `${VAR:-}` resolves to empty
+      # so the api won't crash on import \u2014 it'll just complain at the
+      # first collector call. That's the same behavior as the bare-metal
+      # run, so the failure mode stays consistent across deploys.
+      KIS_APP_KEY: ${KIS_APP_KEY:-}
+      KIS_APP_SECRET: ${KIS_APP_SECRET:-}
+      KIS_ACCOUNT_NO: ${KIS_ACCOUNT_NO:-}
+      KIS_ACCOUNT_PRODUCT: ${KIS_ACCOUNT_PRODUCT:-01}
+      KIS_MODE: ${KIS_MODE:-paper}
+      KRX_ID: ${KRX_ID:-}
+      KRX_PW: ${KRX_PW:-}
+      DART_API_KEY: ${DART_API_KEY:-}
+
+      # --- API server settings ---
+      STOCK_TRADER_API_KEY: ${STOCK_TRADER_API_KEY:?STOCK_TRADER_API_KEY is required \u2014 set it in .env}
+      # Bind on 0.0.0.0 inside the container; compose's `ports:` below
+      # controls what the host actually exposes.
+      API_HOST: 0.0.0.0
+      API_PORT: 8765
+
+      # --- Scheduler ---
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
+      SCHEDULER_DAILY_CRON: ${SCHEDULER_DAILY_CRON:-0 3 * * *}
+      SCHEDULER_TIMEZONE: ${SCHEDULER_TIMEZONE:-Asia/Seoul}
+
+      # --- Logging ---
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_DIR: /app/data/logs
+
+      # Asia/Seoul inside the container so loguru timestamps and the
+      # APScheduler trigger agree with KST. The Dockerfile already
+      # installs tzdata; this just makes the env explicit.
+      TZ: Asia/Seoul
+    ports:
+      # ${API_PORT} on the host \u2192 8765 in the container.
+      # Default 8765 is exposed on ALL host interfaces; tighten to
+      # "127.0.0.1:${API_PORT:-8765}:8765" if you want loopback-only.
+      - "${API_PORT:-8765}:8765"
+    volumes:
+      # Persist logs across container restarts. Host-side rotation policy
+      # is loguru's own (LOG_DIR + retention="30 days" in src.utils.logger).
+      - ./data/logs:/app/data/logs
+
+      # KIS token cache. Without this, every container restart forces a
+      # fresh token issue and KIS's "1 per minute" rate limit kicks in.
+      - ./data/kis:/app/data/kis
+
+      # OpenDartReader corp_codes pickle cache. Rebuilds in ~10s, but
+      # caching keeps the first DART API call snappy.
+      - ./docs_cache:/app/docs_cache
+    networks:
+      - stock_net
+    healthcheck:
+      # Re-declare here (also in Dockerfile) so `docker compose ps` shows
+      # health status without depending on the image's metadata.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8765/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+networks:
+  stock_net:
+    name: stock_trader_net
+    driver: bridge

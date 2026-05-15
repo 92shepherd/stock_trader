@@ -1,0 +1,42 @@
+# =============================================================================
+# Development overrides for docker-compose.yml.
+# -----------------------------------------------------------------------------
+# Adds:
+#   1. DB port published to host 127.0.0.1 (psql / DBeaver / pgcli access)
+#   2. Source code bind-mounted into the api container so edits don't
+#      require a rebuild (uvicorn doesn't reload here either \u2014 the
+#      in-process scheduler would be unhappy with reloads \u2014 but you can
+#      `docker compose restart api` and the new code is picked up).
+#   3. Verbose logging.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Or set the COMPOSE_FILE env var once per shell:
+#   $env:COMPOSE_FILE = "docker-compose.yml;docker-compose.dev.yml"    # PowerShell
+#   export COMPOSE_FILE="docker-compose.yml:docker-compose.dev.yml"    # bash
+#
+# Anti-feature note:
+#   We deliberately do NOT enable `--reload` here. uvicorn auto-reload
+#   tears down the asyncio event loop on each change, which would
+#   abandon any in-flight collector run and orphan the APScheduler
+#   instance. Use `docker compose restart api` for a clean restart.
+# =============================================================================
+
+services:
+  timescaledb:
+    ports:
+      # Loopback-only publish so dev tools on the host can connect, but
+      # the DB is still not reachable from the LAN.
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+
+  api:
+    environment:
+      LOG_LEVEL: DEBUG
+    volumes:
+      # Live source mount \u2014 edit a .py file on the host, restart the
+      # container, see the change. Mounted read-only to discourage
+      # accidental writes from inside the container.
+      - ./src:/app/src:ro
+      - ./migrations:/app/migrations:ro
+      - ./config:/app/config:ro

@@ -25,6 +25,12 @@ dependencies = [
     "tenacity>=8.3.0",
     "pyyaml>=6.0.1",
     "tqdm>=4.66.0",
+    # REST API (src/api/*) + in-process scheduler. APScheduler 3.x line
+    # (AsyncIOScheduler) is stable and integrates with asyncio; v4 is still
+    # pre-release and the API surface has changed.
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "apscheduler>=3.10.4,<4.0",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +52,8 @@ build-backend = "setuptools.build_meta"
 # (src-layout의 표준 방식이 아니라, 프로젝트가 실제로 src를 네임스페이스처럼 쓰고 있음)
 packages = [
     "src",
+    "src.api",
+    "src.api.routers",
     "src.collectors",
     "src.db",
     "src.kis",
