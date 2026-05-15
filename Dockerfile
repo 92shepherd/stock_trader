@@ -109,11 +109,18 @@ COPY --from=builder /build/src ./src
 COPY --from=builder /build/migrations ./migrations
 COPY --from=builder /build/config ./config
 
-# 마운트 대상 디렉터리 사전 생성 + 소유권. 비-root로 실행하므로 권한 필수.
+# entrypoint 스크립 복사 + 실행 권한 부여.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# 마운트 대상 디렉터리 사전 생성 + 소유권. bind mount가 있으면
+# 마운트 시점에 덮어쓰이므로, 최종 권한은 entrypoint에서 다시 조정한다.
 RUN mkdir -p /app/data/logs /app/data/kis /app/docs_cache \
  && chown -R app:app /app
 
-USER app
+# USER 지시는 잠재적으로 root로 시작해서 chown을 수행해야 하므로 설정하지 않는다.
+# entrypoint 스크립이 chown 후 `su app`로 넘긴다 — 이후 python 프로세스는
+# 비-root로 동작한다. 보안 관점에서 최종 상태는 USER app 케이스와 동일.
 
 # 컨테이너 내부 기본 바인딩: 0.0.0.0 (compose가 호스트로 publish해야 외부 접근).
 # 외부에서 127.0.0.1로만 보고 싶으면 compose에서 "127.0.0.1:8765:8765" 형태로 publish.
@@ -129,5 +136,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD curl -fsS http://localhost:8765/health || exit 1
 
 # tini로 wrap → uvicorn이 PID 1이 아니어도 시그널 전달 정상.
-ENTRYPOINT ["/usr/bin/tini", "--"]
+# entrypoint 스크립이 root로 시작해 chown 후 app 유저로 privilege drop 수행.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 CMD ["python", "-m", "src.api"]
