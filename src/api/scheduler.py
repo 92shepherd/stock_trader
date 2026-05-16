@@ -70,6 +70,25 @@ def _timezone_name() -> str:
     return os.getenv("SCHEDULER_TIMEZONE", "Asia/Seoul").strip() or "Asia/Seoul"
 
 
+def _daily_cron_only() -> str | None:
+    """Narrow the composite cron to a single step via SCHEDULER_DAILY_CRON_ONLY.
+
+    Accepted values: 'kis', 'dart', 'fnguide'. Unset or empty → all steps run.
+    Invalid values are logged and ignored (all steps run).
+    """
+    raw = os.getenv("SCHEDULER_DAILY_CRON_ONLY", "").strip().lower()
+    if not raw:
+        return None
+    valid = ("kis", "dart", "fnguide")
+    if raw not in valid:
+        logger.warning(
+            f"[scheduler] SCHEDULER_DAILY_CRON_ONLY={raw!r} is not one of "
+            f"{valid} — ignoring, all steps will run"
+        )
+        return None
+    return raw
+
+
 # ---------------------------------------------------------------------------
 # Scheduled job bodies
 # ---------------------------------------------------------------------------
@@ -78,10 +97,10 @@ def _timezone_name() -> str:
 async def _scheduled_daily_cron() -> None:
     """Body of the 03:00 KST job. Composite KIS + DART + FnGuide.
 
-    Defaults: end_date=yesterday, days=1, snapshot on, skip_done on,
-    no `only` filter so all three composite steps run. The FnGuide
-    step itself self-disables without FNGUIDE_CONSENT_ACK=1, so this
-    job is safe to run on installs that haven't opted into FnGuide.
+    Defaults: end_date=yesterday, days=1, snapshot on, skip_done on.
+    SCHEDULER_DAILY_CRON_ONLY narrows to a single step when set.
+    The FnGuide step itself self-disables without FNGUIDE_CONSENT_ACK=1,
+    so this job is safe to run on installs that haven't opted into FnGuide.
 
     Submits through `runners.submit_daily_cron`, which means:
       - A JobRecord is created so /jobs/{id} can show progress.
@@ -90,9 +109,11 @@ async def _scheduled_daily_cron() -> None:
       - Failures are captured in the record's `error` field AND in the
         normal loguru logs.
     """
-    logger.info("[scheduler] firing daily composite cron (KIS+DART+FnGuide)")
+    only = _daily_cron_only()
+    label = only or "KIS+DART+FnGuide"
+    logger.info(f"[scheduler] firing daily composite cron ({label})")
     try:
-        record = await submit_daily_cron()
+        record = await submit_daily_cron(only=only)
         logger.info(
             f"[scheduler] submitted job_id={record.id} for daily cron"
         )

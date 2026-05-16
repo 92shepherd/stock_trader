@@ -1,0 +1,83 @@
+# =============================================================================
+# stock_trader — GCP DB 연결용 로컬 실행 compose
+# -----------------------------------------------------------------------------
+# 기존 docker-compose.yml 과 달리 timescaledb 컨테이너를 띄우지 않고,
+# 호스트에서 SSH 터널로 열려 있는 GCP PostgreSQL (localhost:54321) 에 직접 연결.
+#
+# 전제조건:
+#   - GCP PostgreSQL SSH 터널이 호스트 localhost:54321 에 열려 있어야 함
+#   - host.docker.internal 은 Docker Desktop(Windows/Mac) 에서 자동으로
+#     호스트 루프백을 가리킴
+#
+# Run:
+#   docker compose -f docker-compose.gcp-db.yml up -d
+#   docker compose -f docker-compose.gcp-db.yml logs -f api
+#   docker compose -f docker-compose.gcp-db.yml down
+# =============================================================================
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: stock_trader_api:latest
+    container_name: stock_trader_api_gcp
+    restart: unless-stopped
+    environment:
+      # --- DB: 호스트 SSH 터널(localhost:54321) → GCP PostgreSQL ---
+      DB_HOST: host.docker.internal
+      DB_PORT: 54321
+      DB_NAME: ${DB_NAME:-stockdata}
+      DB_USER: ${DB_USER:-stock}
+      DB_PASSWORD: ${DB_PASSWORD:-changeme}
+
+      # --- KIS / DART / KRX credentials ---
+      KIS_APP_KEY: ${KIS_APP_KEY:-}
+      KIS_APP_SECRET: ${KIS_APP_SECRET:-}
+      KIS_ACCOUNT_NO: ${KIS_ACCOUNT_NO:-}
+      KIS_ACCOUNT_PRODUCT: ${KIS_ACCOUNT_PRODUCT:-01}
+      KIS_MODE: ${KIS_MODE:-paper}
+      KRX_ID: ${KRX_ID:-}
+      KRX_PW: ${KRX_PW:-}
+      DART_API_KEY: ${DART_API_KEY:-}
+
+      # --- FnGuide consensus scraper ---
+      FNGUIDE_CONSENT_ACK: ${FNGUIDE_CONSENT_ACK:-}
+
+      # --- API server settings ---
+      STOCK_TRADER_API_KEY: ${STOCK_TRADER_API_KEY:?STOCK_TRADER_API_KEY is required — set it in .env}
+      API_HOST: 0.0.0.0
+      API_PORT: 8766
+
+      # --- Scheduler: 컨센서스 수집만 실행, 나머지(KIS/DART)는 비활성화 ---
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
+      SCHEDULER_DAILY_CRON: 0 16 * * *
+      SCHEDULER_TIMEZONE: ${SCHEDULER_TIMEZONE:-Asia/Seoul}
+      SCHEDULER_DAILY_CRON_ONLY: fnguide
+
+      # --- Logging ---
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_DIR: /app/data/logs
+
+      TZ: Asia/Seoul
+    ports:
+      - "8766:8766"
+    volumes:
+      - ./data/logs:/app/data/logs
+      - ./data/kis:/app/data/kis
+      - ./docs_cache:/app/docs_cache
+    extra_hosts:
+      # Docker Desktop 에서는 자동 주입되지만, 명시적으로 선언해 두면
+      # Linux Docker Engine 환경에서도 동일하게 동작함.
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8766/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+networks:
+  default:
+    name: stock_trader_gcp_net
+    driver: bridge
