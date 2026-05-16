@@ -504,6 +504,71 @@ async def submit_consensus_fnguide(
     )
 
 
+# ----- 한경 컨센서스 (async, long) -----
+
+
+async def submit_consensus_hankyung(
+    *,
+    target_date: date | None = None,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    backfill_year: bool = False,
+    skip_done: bool = True,
+    request_delay: float | None = None,
+) -> JobRecord:
+    """한경 컨센서스 리포트 수집 (날짜 지정 또는 1년 백필).
+
+    모드 우선순위:
+        1. backfill_year=True  → 오늘 기준 1년치 백필 (backfill_one_year)
+        2. from_date / to_date → 날짜 범위 (backfill_date_range)
+        3. target_date         → 하루 수집 (collect_one_day)
+        4. 모두 None           → 오늘 하루 (collect_one_day, target_date=오늘)
+
+    HANKYUNG_ENABLED=true 가 없으면 collector 가 RuntimeError 로 거부하고
+    JobRecord 는 'failed' 로 마킹됨.
+    """
+    from src.collectors.consensus_hankyung import (
+        backfill_date_range,
+        backfill_one_year,
+        collect_one_day,
+    )
+
+    delay = request_delay if request_delay is not None else 0.5
+
+    params: dict[str, Any] = {
+        "target_date": target_date.isoformat() if target_date else None,
+        "from_date": from_date.isoformat() if from_date else None,
+        "to_date": to_date.isoformat() if to_date else None,
+        "backfill_year": backfill_year,
+        "skip_done": skip_done,
+        "request_delay": delay,
+    }
+
+    if backfill_year:
+        return await _run_async_locked(
+            CollectorName.CONSENSUS_HANKYUNG, params, backfill_one_year,
+            as_of_date=to_date,
+            skip_done=skip_done,
+            request_delay=delay,
+        )
+    if from_date or to_date:
+        effective_from = from_date or date.today()
+        effective_to = to_date or date.today()
+        return await _run_async_locked(
+            CollectorName.CONSENSUS_HANKYUNG, params, backfill_date_range,
+            from_date=effective_from,
+            to_date=effective_to,
+            skip_done=skip_done,
+            request_delay=delay,
+        )
+    return await _run_async_locked(
+        CollectorName.CONSENSUS_HANKYUNG, params, collect_one_day,
+        target_date=target_date,
+        skip_done=skip_done,
+        request_delay=delay,
+    )
+
+
 # ----- Composite: daily cron (KIS + DART + FnGuide consensus) -----
 
 
@@ -683,5 +748,6 @@ __all__ = [
     "submit_dart_financials",
     "submit_dart_indicators",
     "submit_consensus_fnguide",
+    "submit_consensus_hankyung",
     "submit_daily_cron",
 ]

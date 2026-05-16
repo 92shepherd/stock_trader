@@ -38,12 +38,13 @@ from typing import Any
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from src.api.runners import submit_daily_cron
+from src.api.runners import submit_consensus_hankyung, submit_daily_cron
 from src.utils.logger import logger
 
 
 # Job IDs (stable strings so /schedule endpoints can address them).
 JOB_ID_DAILY_CRON = "daily_kis_dart_cron"
+JOB_ID_HANKYUNG_CRON = "daily_hankyung_cron"
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +69,14 @@ def _daily_cron_expression() -> str:
 
 def _timezone_name() -> str:
     return os.getenv("SCHEDULER_TIMEZONE", "Asia/Seoul").strip() or "Asia/Seoul"
+
+
+def _hankyung_enabled() -> bool:
+    """HANKYUNG_ENABLED 환경변수로 한경 컨센서스 스케줄 잡 활성화 여부 결정.
+
+    기본값 False — docker-compose.gcp-db.yml 에서만 'true' 로 설정됨.
+    """
+    return _env_bool("HANKYUNG_ENABLED", False)
 
 
 def _daily_cron_only() -> str | None:
@@ -124,6 +133,29 @@ async def _scheduled_daily_cron() -> None:
         logger.exception(f"[scheduler] daily cron submission failed: {e}")
 
 
+async def _scheduled_hankyung_cron() -> None:
+    """한경 컨센서스 일 스케줄 잡 — 전일 리포트 수집.
+
+    HANKYUNG_ENABLED=true 일 때만 register_default_jobs() 에서 등록됨.
+    전일(yesterday) 을 target_date 로 고정하여 수집. skip_done=True 이므로
+    같은 날 수동 트리거가 이미 실행된 경우 0건으로 즉시 완료.
+    """
+    from datetime import date, timedelta
+    yesterday = date.today() - timedelta(days=1)
+    logger.info(f"[scheduler] firing hankyung cron for {yesterday}")
+    try:
+        record = await submit_consensus_hankyung(
+            target_date=yesterday,
+            skip_done=True,
+        )
+        logger.info(
+            f"[scheduler] submitted job_id={record.id} for hankyung cron "
+            f"(target_date={yesterday})"
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"[scheduler] hankyung cron submission failed: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Scheduler lifecycle
 # ---------------------------------------------------------------------------
@@ -154,14 +186,22 @@ def build_scheduler() -> AsyncIOScheduler:
 
 
 def register_default_jobs(scheduler: AsyncIOScheduler) -> list[dict[str, Any]]:
-    """Wire up the default 03:00 KST composite cron job.
+    """Wire up the default cron jobs.
+
+    항상 등록되는 잡:
+        daily_kis_dart_cron — KIS + DART + FnGuide composite (SCHEDULER_DAILY_CRON)
+
+    조건부 등록 잡:
+        daily_hankyung_cron — HANKYUNG_ENABLED=true 일 때만, 전일 한경 리포트 수집.
+                              기본 비활성화. docker-compose.gcp-db.yml 에서만 켜짐.
 
     Returns a list of registration descriptors (id, cron) for logging.
-    Idempotent: if the job is already registered, it gets replaced
+    Idempotent: if a job is already registered, it gets replaced
     (`replace_existing=True`).
     """
     cron_expr = _daily_cron_expression()
     trigger = CronTrigger.from_crontab(cron_expr, timezone=_timezone_name())
+
     scheduler.add_job(
         _scheduled_daily_cron,
         trigger=trigger,
@@ -169,7 +209,24 @@ def register_default_jobs(scheduler: AsyncIOScheduler) -> list[dict[str, Any]]:
         name="Daily composite backfill (KIS + DART + FnGuide consensus)",
         replace_existing=True,
     )
-    return [{"id": JOB_ID_DAILY_CRON, "cron": cron_expr}]
+    registered = [{"id": JOB_ID_DAILY_CRON, "cron": cron_expr}]
+
+    if _hankyung_enabled():
+        scheduler.add_job(
+            _scheduled_hankyung_cron,
+            trigger=trigger,
+            id=JOB_ID_HANKYUNG_CRON,
+            name="Daily Hankyung consensus (전일 리포트)",
+            replace_existing=True,
+        )
+        registered.append({"id": JOB_ID_HANKYUNG_CRON, "cron": cron_expr})
+    else:
+        logger.info(
+            "[scheduler] hankyung cron not registered "
+            "(HANKYUNG_ENABLED is not set to true)"
+        )
+
+    return registered
 
 
 def start_scheduler() -> AsyncIOScheduler | None:
@@ -215,6 +272,7 @@ def stop_scheduler(scheduler: AsyncIOScheduler | None) -> None:
 
 __all__ = [
     "JOB_ID_DAILY_CRON",
+    "JOB_ID_HANKYUNG_CRON",
     "build_scheduler",
     "register_default_jobs",
     "start_scheduler",

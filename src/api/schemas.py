@@ -314,6 +314,45 @@ class ConsensusFnguideRequest(BaseModel):
         return [s.strip().zfill(6) for s in v if s and s.strip()]
 
 
+class ConsensusHankyungRequest(BaseModel):
+    """POST /collect/consensus/hankyung — 한경 컨센서스 리포트 수집.
+
+    모드 우선순위:
+        1. backfill_year=True  → 오늘 기준 1년치 백필
+        2. from_date / to_date → 날짜 범위 수집
+        3. target_date         → 하루 수집
+        4. 모두 None           → 오늘 하루 수집
+
+    사전 조건:
+        HANKYUNG_ENABLED=true 가 환경변수에 설정되어 있어야 함.
+        docker-compose.gcp-db.yml 실행 시에만 활성화됨.
+    """
+
+    target_date: date | None = Field(
+        None,
+        description="하루 수집 대상일 (YYYY-MM-DD). None 이면 오늘.",
+    )
+    from_date: date | None = Field(
+        None,
+        description="날짜 범위 수집 시작일. to_date 와 함께 사용.",
+    )
+    to_date: date | None = Field(
+        None,
+        description="날짜 범위 수집 종료일. from_date 와 함께 사용.",
+    )
+    backfill_year: bool = Field(
+        False,
+        description="True 이면 오늘(to_date) 기준 1년치 백필. 다른 날짜 파라미터보다 우선.",
+    )
+    skip_done: bool = True
+    request_delay: float | None = Field(
+        None,
+        ge=0.0,
+        le=10.0,
+        description="페이지 요청 간 sleep (초). None = 0.5s.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Composite: the default daily cron (POST /collect/daily-cron)
 # ---------------------------------------------------------------------------
@@ -403,6 +442,7 @@ __all__ = [
     "DartFinancialsRequest",
     "DartIndicatorsRequest",
     "ConsensusFnguideRequest",
+    "ConsensusHankyungRequest",
     "DailyCronRequest",
     # scheduler
     "ScheduleEntry",

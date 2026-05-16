@@ -32,6 +32,7 @@ from src.api.runners import (
     run_tickers_kr,
     run_tickers_us,
     submit_consensus_fnguide,
+    submit_consensus_hankyung,
     submit_daily_cron,
     submit_daily_fdr,
     submit_daily_kis,
@@ -42,6 +43,7 @@ from src.api.runners import (
 )
 from src.api.schemas import (
     ConsensusFnguideRequest,
+    ConsensusHankyungRequest,
     DailyCronRequest,
     DailyFDRRequest,
     DailyKISRequest,
@@ -193,6 +195,37 @@ async def trigger_daily_us(req: DailyUSRequest) -> JobAcceptedResponse:
         exchanges=req.exchanges,
         security_types=req.security_types,
         skip_done=req.skip_done,
+    )
+    return _job_accepted(record)
+
+
+@router.post(
+    "/consensus/hankyung",
+    response_model=JobAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="한경 컨센서스 리포트 수집 (날짜 지정 또는 1년 백필)",
+)
+async def trigger_consensus_hankyung(
+    req: ConsensusHankyungRequest,
+) -> JobAcceptedResponse:
+    """한경 컨센서스(markets.hankyung.com) 애널리스트 리포트 수집 트리거.
+
+    HANKYUNG_ENABLED=true 가 환경변수에 없으면 collector 가 RuntimeError 로
+    거부하고 job 은 'failed' 로 마킹됨.
+
+    수집 모드:
+        - backfill_year=true → 1년치 백필
+        - from_date + to_date → 날짜 범위
+        - target_date → 하루
+        - 파라미터 없음 → 오늘 하루
+    """
+    record = await submit_consensus_hankyung(
+        target_date=req.target_date,
+        from_date=req.from_date,
+        to_date=req.to_date,
+        backfill_year=req.backfill_year,
+        skip_done=req.skip_done,
+        request_delay=req.request_delay,
     )
     return _job_accepted(record)
 

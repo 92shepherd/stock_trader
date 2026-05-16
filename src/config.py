@@ -106,6 +106,22 @@ class DartSettings(BaseSettings):
         return self.dart_corp_codes_stale_after_days
 
 
+class HankyungSettings(BaseSettings):
+    """한경 컨센서스 수집기 활성화 설정.
+
+    HANKYUNG_ENABLED=true (또는 1/yes) 로 설정해야 수집기가 동작.
+    docker-compose.gcp-db.yml 에서만 활성화됨.
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    hankyung_enabled: str = ""
+
+    @property
+    def enabled(self) -> bool:
+        return self.hankyung_enabled.strip().lower() in ("1", "true", "yes", "y", "on")
+
+
 class DailyConfig(BaseModel):
     backfill_days: int = 400
     request_delay: float = 0.3
@@ -148,6 +164,11 @@ def get_kis_settings() -> KISSettings:
 @lru_cache
 def get_fnguide_settings() -> FnguideSettings:
     return FnguideSettings()
+
+
+@lru_cache
+def get_hankyung_settings() -> HankyungSettings:
+    return HankyungSettings()
 
 
 @lru_cache

@@ -44,6 +44,9 @@ services:
       # --- FnGuide consensus scraper ---
       FNGUIDE_CONSENT_ACK: ${FNGUIDE_CONSENT_ACK:-}
 
+      # --- 한경 컨센서스 수집기 (GCP 모드에서만 활성화) ---
+      HANKYUNG_ENABLED: "true"
+
       # --- API server settings ---
       STOCK_TRADER_API_KEY: ${STOCK_TRADER_API_KEY:?STOCK_TRADER_API_KEY is required — set it in .env}
       API_HOST: 0.0.0.0

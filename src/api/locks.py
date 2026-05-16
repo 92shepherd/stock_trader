@@ -82,6 +82,7 @@ class CollectorName(str, Enum):
 
     # Consensus / analyst data
     CONSENSUS_FNGUIDE = "consensus_fnguide"
+    CONSENSUS_HANKYUNG = "consensus_hankyung"
 
     # Composite — the default daily cron (KIS + DART + FnGuide consensus).
     # Holds while any of the three composite steps is running so manual

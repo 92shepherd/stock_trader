@@ -688,6 +688,66 @@ def upsert_consensus_estimates(df: pd.DataFrame) -> int:
     return affected
 
 
+HANKYUNG_COLUMNS = [
+    "report_idx",
+    "business_code",
+    "business_name",
+    "report_date",
+    "grade_value",
+    "target_price",
+    "prev_target_price",
+    "change_price",
+    "analyst",
+    "office_name",
+    "report_title",
+]
+
+_HANKYUNG_PK = ("report_idx",)
+
+
+def upsert_hankyung_reports(df: pd.DataFrame) -> int:
+    """Bulk upsert hankyung_reports via COPY + ON CONFLICT.
+
+    PK: report_idx. 동일 report_idx 재수집 시 모든 컬럼 UPDATE.
+    """
+    if df.empty:
+        return 0
+
+    for col in HANKYUNG_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[HANKYUNG_COLUMNS].copy()
+
+    buf = StringIO()
+    df.to_csv(buf, index=False, header=False, sep="\t", na_rep="\\N")
+    buf.seek(0)
+
+    col_list = ", ".join(HANKYUNG_COLUMNS)
+    update_cols = [c for c in HANKYUNG_COLUMNS if c not in _HANKYUNG_PK]
+    update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+
+    with raw_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TEMP TABLE tmp_hankyung "
+                "(LIKE hankyung_reports INCLUDING DEFAULTS) "
+                "ON COMMIT DROP"
+            )
+            with cur.copy(
+                f"COPY tmp_hankyung ({col_list}) FROM STDIN "
+                f"WITH (FORMAT CSV, DELIMITER E'\\t', NULL '\\N')"
+            ) as copy:
+                copy.write(buf.read())
+            cur.execute(
+                f"INSERT INTO hankyung_reports ({col_list}) "
+                f"SELECT {col_list} FROM tmp_hankyung "
+                f"ON CONFLICT (report_idx) "
+                f"DO UPDATE SET {update_clause}"
+            )
+            affected = cur.rowcount
+    return affected
+
+
 def get_completed_symbols_on_date(
     collector: str,
     as_of_date: date,
