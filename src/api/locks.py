@@ -95,6 +95,9 @@ class CollectorName(str, Enum):
     # Research — factor signal computation + evaluation
     FACTOR_EVAL = "factor_eval"
 
+    # Minute prices — KIS 분봉 수집
+    MINUTE_KIS = "minute_kis"
+
 
 # Magic prefix for the advisory-lock key high half: ASCII "ST\\0\\0".
 # Keeps our keys in a recognizable, project-scoped namespace inside the

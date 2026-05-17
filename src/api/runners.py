@@ -919,6 +919,48 @@ async def submit_factor_eval_all(
     )
 
 
+async def submit_minute_kis(
+    *,
+    symbols: list[str] | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    skip_done: bool = True,
+    request_delay: float | None = None,
+    force_full_universe: bool = False,
+) -> JobRecord:
+    """KIS 1분봉 수집. 조회 가능 기간: 최근 30거래일.
+
+    symbols=None + force_full_universe=False 이면 ValueError 를 즉시 raise.
+    (collector 내부에서도 동일 검사를 하지만, 잡 등록 전에 빠르게 거부하기 위해
+     여기서 먼저 검사.)
+    """
+    if symbols is None and not force_full_universe:
+        raise ValueError(
+            "Collecting minute bars for the full universe is very slow. "
+            "Pass symbols=[...] or set force_full_universe=True."
+        )
+
+    from src.collectors.minute_kis import backfill_minutes
+
+    params: dict[str, Any] = {
+        "symbols": symbols,
+        "start_date": start_date.isoformat() if start_date else None,
+        "end_date": end_date.isoformat() if end_date else None,
+        "skip_done": skip_done,
+        "request_delay": request_delay,
+        "force_full_universe": force_full_universe,
+    }
+    return await _run_async_locked(
+        CollectorName.MINUTE_KIS, params, backfill_minutes,
+        symbols=symbols,
+        start_date=start_date,
+        end_date=end_date,
+        skip_done=skip_done,
+        request_delay=request_delay,
+        force_full_universe=force_full_universe,
+    )
+
+
 __all__ = [
     # sync runs
     "run_tickers_kr",
@@ -934,6 +976,7 @@ __all__ = [
     "submit_consensus_fnguide",
     "submit_consensus_hankyung",
     "submit_daily_cron",
+    "submit_minute_kis",
     # research
     "submit_factor_eval",
     "submit_factor_eval_all",

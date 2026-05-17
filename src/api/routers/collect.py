@@ -40,6 +40,7 @@ from src.api.runners import (
     submit_dart_disclosures,
     submit_dart_financials,
     submit_dart_indicators,
+    submit_minute_kis,
 )
 from src.api.schemas import (
     ConsensusFnguideRequest,
@@ -53,6 +54,7 @@ from src.api.schemas import (
     DartFinancialsRequest,
     DartIndicatorsRequest,
     JobAcceptedResponse,
+    MinuteKISRequest,
     SyncRunResponse,
     TickersKRRequest,
     TickersUSRequest,
@@ -349,4 +351,42 @@ async def trigger_daily_cron(req: DailyCronRequest) -> JobAcceptedResponse:
         fetch_snapshot=req.fetch_snapshot,
         skip_done=req.skip_done,
     )
+    return _job_accepted(record)
+
+
+# ===========================================================================
+# Minute prices — KIS 1분봉
+# ===========================================================================
+
+
+@router.post(
+    "/minute/kis",
+    response_model=JobAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="KIS 1분봉 수집 (최근 30거래일)",
+    description=(
+        "KIS inquire-time-itemchartprice 를 이용해 1분봉을 수집하여 "
+        "minute_prices 테이블에 적재합니다.\n\n"
+        "**기간 제약**: KIS API 는 최근 30거래일까지만 제공합니다. "
+        "start_date 를 생략하면 자동으로 30거래일 전으로 설정됩니다.\n\n"
+        "**성능 주의**: 전체 활성 종목 수집은 수십 시간 소요됩니다. "
+        "symbols 파라미터로 대상을 좁히거나 force_full_universe=true 를 "
+        "명시적으로 설정하세요."
+    ),
+)
+async def trigger_minute_kis(req: MinuteKISRequest) -> JobAcceptedResponse:
+    try:
+        record = await submit_minute_kis(
+            symbols=req.symbols,
+            start_date=req.start_date,
+            end_date=req.end_date,
+            skip_done=req.skip_done,
+            request_delay=req.request_delay,
+            force_full_universe=req.force_full_universe,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
     return _job_accepted(record)

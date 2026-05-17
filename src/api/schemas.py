@@ -180,6 +180,67 @@ class DailyKISRequest(_DateRangeMixin):
         return [s.strip().zfill(6) for s in v if s and s.strip()]
 
 
+class MinuteKISRequest(BaseModel):
+    """POST /collect/minute/kis
+
+    KIS 1분봉 수집. 조회 가능 기간: 최근 30거래일.
+
+    성능 주의:
+        하루치 1종목 수집에 ~13번의 API 호출이 필요하며,
+        target_date 가 오래될수록 중간 날짜를 건너뛰는 호출이 추가됨.
+        전체 활성 종목(~2,600개) × 30일 수집은 수십 시간 소요.
+        대상 종목을 symbols 로 명시하거나 force_full_universe=true 를 명시적으로
+        설정하도록 설계되어 있음.
+    """
+
+    symbols: list[str] | None = Field(
+        None,
+        description=(
+            "6자리 종목코드 리스트. None = 전체 활성 종목 (force_full_universe=true 필요)."
+        ),
+    )
+    start_date: date | None = Field(
+        None,
+        description="수집 시작일. None = 30거래일 전 (KIS API 최대 기간).",
+    )
+    end_date: date | None = Field(
+        None,
+        description="수집 종료일. None = 오늘.",
+    )
+    skip_done: bool = Field(
+        True,
+        description="collection_log 에 이미 성공한 (symbol, date) 쌍 스킵.",
+    )
+    request_delay: float | None = Field(
+        None,
+        ge=0.0,
+        le=5.0,
+        description="API 호출 간격(초). None = 모드 기본값 (real: 0.07s, paper: 0.25s).",
+    )
+    force_full_universe: bool = Field(
+        False,
+        description=(
+            "symbols=None 일 때 전체 활성 종목 수집 허용. "
+            "소요 시간이 매우 길 수 있으므로 명시적으로 활성화해야 함."
+        ),
+    )
+
+    @field_validator("symbols")
+    @classmethod
+    def _zero_pad(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        return [s.strip().zfill(6) for s in v if s and s.strip()]
+
+    @field_validator("end_date")
+    @classmethod
+    def _end_after_start(cls, v: date | None, info) -> date | None:
+        start = info.data.get("start_date")
+        if v is not None and start is not None and v < start:
+            raise ValueError("end_date must be on or after start_date")
+        return v
+
+
 class DailyUSRequest(_DateRangeMixin):
     """POST /collect/daily/us"""
 
