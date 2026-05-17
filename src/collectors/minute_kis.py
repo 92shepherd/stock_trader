@@ -54,8 +54,11 @@ COLLECTOR_NAME = "minute_kis"
 MAX_LOOKBACK_CALENDAR_DAYS = 42
 
 _DEFAULT_DELAY_BY_MODE = {
-    "real": 0.07,
-    "paper": 0.25,
+    # 분봉 API는 일봉보다 호출 밀도가 높으므로 보수적으로 설정.
+    # real: 20 rps 제한 → 10 rps 목표 (50% 헤드룸)
+    # paper: 5 rps 제한 → 2.5 rps 목표
+    "real": 0.1,
+    "paper": 0.4,
 }
 
 _CIRCUIT_BREAKER_FAILURES = 10

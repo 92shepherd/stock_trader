@@ -33,6 +33,10 @@ from src.kis.auth import KISAuth, get_kis_auth
 from src.kis.quotations import KISQuotationsError
 from src.utils.logger import logger
 
+
+class KISRateLimitError(KISQuotationsError):
+    """EGW00201 — 초당 거래건수 초과. transport 오류처럼 재시도 가능."""
+
 # ---------------------------------------------------------------------------
 # Endpoint / TR constants
 # ---------------------------------------------------------------------------
@@ -133,13 +137,13 @@ class KISMinute:
             return None
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type(httpx.TransportError),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=1, max=30),
+        retry=retry_if_exception_type((httpx.TransportError, KISRateLimitError)),
         reraise=True,
     )
     def _call(self, symbol: str, hour: str) -> list[dict[str, Any]]:
-        """단일 분봉 조회 호출. transport 오류만 재시도."""
+        """단일 분봉 조회 호출. transport 오류 및 rate limit(EGW00201) 재시도."""
         params = {
             "FID_ETC_CLS_CODE": "",
             "FID_COND_MRKT_DIV_CODE": "J",
@@ -176,9 +180,11 @@ class KISMinute:
         if rt_cd != "0":
             msg_cd = payload.get("msg_cd", "")
             msg1 = payload.get("msg1", "").strip()
-            raise KISQuotationsError(
-                f"KIS {TR_MINUTE_CHART} [{msg_cd}]: {msg1 or str(payload)[:200]}"
-            )
+            err_msg = f"KIS {TR_MINUTE_CHART} [{msg_cd}]: {msg1 or str(payload)[:200]}"
+            # EGW00201: 초당 거래건수 초과 → 재시도 가능한 rate limit 오류
+            if msg_cd == "EGW00201":
+                raise KISRateLimitError(err_msg)
+            raise KISQuotationsError(err_msg)
 
         output2 = payload.get("output2") or []
         return output2 if isinstance(output2, list) else []
