@@ -14,7 +14,7 @@ from io import StringIO
 import pandas as pd
 from sqlalchemy import select, text
 
-from src.db.connection import raw_connection, session_scope
+from src.db.connection import get_engine, raw_connection, session_scope
 from src.db.models import (
     CollectionLog,
     ConsensusEstimate,
@@ -22,6 +22,13 @@ from src.db.models import (
     DartDisclosure,
     DartFinancial,
     DartIndicator,
+    EvalMetric,
+    EvalRun,
+    FactorSignal,
+    ForwardReturn,
+    ModelFeatureImportance,
+    ModelPrediction,
+    ModelRun,
     Ticker,
     TickerUS,
 )
@@ -202,7 +209,7 @@ def query_daily_with_names(
         f"ORDER BY date DESC, symbol {limit_sql}"
     )
 
-    with raw_connection() as conn:
+    with get_engine().connect() as conn:
         return pd.read_sql(sql, conn, params=params)
 
 
@@ -933,3 +940,426 @@ def get_missing_dates(
             result.append(d)
         d = date.fromordinal(d.toordinal() + 1)
     return result
+
+
+# -------------------- Phase 1 research infra --------------------
+# Forward returns & factor signals (cross-sectional alpha evaluation).
+# Tables created by migrations/014_research_infra.sql.
+
+FORWARD_RETURN_COLUMNS = [
+    "symbol", "date", "horizon_days",
+    "fwd_return", "high_return",
+    "universe", "source",
+]
+_FWD_PK = ("symbol", "date", "horizon_days")
+
+FACTOR_SIGNAL_COLUMNS = [
+    "symbol", "date", "factor_name",
+    "raw_value", "neutral_value", "rank_value", "z_score",
+    "universe",
+]
+_FACTOR_PK = ("symbol", "date", "factor_name")
+
+
+def upsert_forward_returns(df: pd.DataFrame) -> int:
+    """Bulk upsert forward_returns via COPY + ON CONFLICT.
+
+    Expects df columns to be a subset of FORWARD_RETURN_COLUMNS. Missing
+    columns are NULLed out (except PK columns which are required).
+
+    Re-run safety: PK is the natural composite key, so re-computing the
+    same (symbol, date, horizon_days) overwrites cleanly. This matters
+    because forward returns get recomputed every time daily_prices is
+    backfilled with newer dates.
+    """
+    if df.empty:
+        return 0
+
+    for col in FORWARD_RETURN_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[FORWARD_RETURN_COLUMNS].copy()
+
+    buf = StringIO()
+    df.to_csv(buf, index=False, header=False, sep="\t", na_rep="\\N")
+    buf.seek(0)
+
+    col_list = ", ".join(FORWARD_RETURN_COLUMNS)
+    update_cols = [c for c in FORWARD_RETURN_COLUMNS if c not in _FWD_PK]
+    update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+
+    with raw_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TEMP TABLE tmp_fwd_returns "
+                "(LIKE forward_returns INCLUDING DEFAULTS) "
+                "ON COMMIT DROP"
+            )
+            with cur.copy(
+                f"COPY tmp_fwd_returns ({col_list}) FROM STDIN "
+                f"WITH (FORMAT CSV, DELIMITER E'\\t', NULL '\\N')"
+            ) as copy:
+                copy.write(buf.read())
+            cur.execute(
+                f"INSERT INTO forward_returns ({col_list}) "
+                f"SELECT {col_list} FROM tmp_fwd_returns "
+                f"ON CONFLICT (symbol, date, horizon_days) "
+                f"DO UPDATE SET {update_clause}"
+            )
+            affected = cur.rowcount
+    return affected
+
+
+def upsert_factor_signals(df: pd.DataFrame) -> int:
+    """Bulk upsert factor_signals via COPY + ON CONFLICT.
+
+    Expects df columns to be a subset of FACTOR_SIGNAL_COLUMNS. Missing
+    columns are NULLed out.
+    """
+    if df.empty:
+        return 0
+
+    for col in FACTOR_SIGNAL_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[FACTOR_SIGNAL_COLUMNS].copy()
+
+    buf = StringIO()
+    df.to_csv(buf, index=False, header=False, sep="\t", na_rep="\\N")
+    buf.seek(0)
+
+    col_list = ", ".join(FACTOR_SIGNAL_COLUMNS)
+    update_cols = [c for c in FACTOR_SIGNAL_COLUMNS if c not in _FACTOR_PK]
+    update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+
+    with raw_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TEMP TABLE tmp_factor_signals "
+                "(LIKE factor_signals INCLUDING DEFAULTS) "
+                "ON COMMIT DROP"
+            )
+            with cur.copy(
+                f"COPY tmp_factor_signals ({col_list}) FROM STDIN "
+                f"WITH (FORMAT CSV, DELIMITER E'\\t', NULL '\\N')"
+            ) as copy:
+                copy.write(buf.read())
+            cur.execute(
+                f"INSERT INTO factor_signals ({col_list}) "
+                f"SELECT {col_list} FROM tmp_factor_signals "
+                f"ON CONFLICT (symbol, date, factor_name) "
+                f"DO UPDATE SET {update_clause}"
+            )
+            affected = cur.rowcount
+    return affected
+
+
+def query_forward_returns(
+    horizon_days: int,
+    start: date | None = None,
+    end: date | None = None,
+    symbols: list[str] | None = None,
+) -> pd.DataFrame:
+    """Read forward_returns into a DataFrame.
+
+    Returns columns: symbol, date, horizon_days, fwd_return, high_return.
+    Order: (date, symbol). Suitable for cross-sectional IC calculation
+    via groupby('date').
+    """
+    where = ["horizon_days = :h"]
+    params: dict = {"h": horizon_days}
+    if start is not None:
+        where.append("date >= :s")
+        params["s"] = start
+    if end is not None:
+        where.append("date <= :e")
+        params["e"] = end
+    if symbols:
+        where.append("symbol = ANY(:syms)")
+        params["syms"] = list(symbols)
+    sql = text(
+        "SELECT symbol, date, horizon_days, fwd_return, high_return "
+        "FROM forward_returns "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY date, symbol"
+    )
+    with get_engine().connect() as conn:
+        return pd.read_sql(sql, conn, params=params)
+
+
+def query_factor_signals(
+    factor_name: str,
+    start: date | None = None,
+    end: date | None = None,
+    symbols: list[str] | None = None,
+) -> pd.DataFrame:
+    """Read factor_signals into a DataFrame.
+
+    Returns columns: symbol, date, factor_name, raw_value, neutral_value,
+    rank_value, z_score. Order: (date, symbol).
+    """
+    where = ["factor_name = :f"]
+    params: dict = {"f": factor_name}
+    if start is not None:
+        where.append("date >= :s")
+        params["s"] = start
+    if end is not None:
+        where.append("date <= :e")
+        params["e"] = end
+    if symbols:
+        where.append("symbol = ANY(:syms)")
+        params["syms"] = list(symbols)
+    sql = text(
+        "SELECT symbol, date, factor_name, raw_value, neutral_value, "
+        "rank_value, z_score "
+        "FROM factor_signals "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY date, symbol"
+    )
+    with get_engine().connect() as conn:
+        return pd.read_sql(sql, conn, params=params)
+
+
+def insert_eval_run(
+    run_id: str,
+    factor_name: str,
+    universe: str,
+    start_date: date,
+    end_date: date,
+    horizon_days: int,
+    params: dict | None = None,
+    n_observations: int | None = None,
+    notes: str | None = None,
+) -> None:
+    """Insert one row into eval_runs. Caller generates run_id.
+
+    Recommended run_id format: 'YYYYMMDD_HHMMSS_<factor>_<universe>'
+    (factor_eval.make_run_id helper produces this).
+    """
+    with session_scope() as session:
+        session.add(EvalRun(
+            run_id=run_id,
+            factor_name=factor_name,
+            universe=universe,
+            start_date=start_date,
+            end_date=end_date,
+            horizon_days=horizon_days,
+            params=params,
+            n_observations=n_observations,
+            notes=notes,
+        ))
+
+
+def insert_eval_metrics(
+    run_id: str,
+    metrics: dict[str, float | None],
+) -> int:
+    """Insert metrics for an existing run.
+
+    `metrics` keys become metric_name, values become metric_value.
+    NaN / None values are stored as NULL.
+    Returns the number of rows inserted.
+    """
+    if not metrics:
+        return 0
+
+    import math
+    rows = []
+    for k, v in metrics.items():
+        if v is None:
+            mv = None
+        elif isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            mv = None
+        else:
+            mv = v
+        rows.append(EvalMetric(
+            run_id=run_id, metric_name=k, metric_value=mv,
+        ))
+
+    with session_scope() as session:
+        session.add_all(rows)
+    return len(rows)
+
+
+def get_eval_summary(
+    factor_name: str | None = None,
+    universe: str | None = None,
+    limit: int = 50,
+) -> pd.DataFrame:
+    """Read v_eval_summary (the wide pivot of run + standard metrics).
+
+    Useful for quickly comparing recent evaluations of one factor across
+    universes, or comparing different factors on the same universe.
+    """
+    where = []
+    params: dict = {}
+    if factor_name is not None:
+        where.append("factor_name = :f")
+        params["f"] = factor_name
+    if universe is not None:
+        where.append("universe = :u")
+        params["u"] = universe
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    sql = text(
+        f"SELECT * FROM v_eval_summary {where_sql} "
+        f"ORDER BY created_at DESC LIMIT {int(limit)}"
+    )
+    with get_engine().connect() as conn:
+        return pd.read_sql(sql, conn, params=params)
+
+
+# -------------------- Phase 2 model infra --------------------
+# ML model runs, predictions, feature importance.
+# Tables created by migrations/015_model_runs.sql.
+
+MODEL_PREDICTION_COLUMNS = [
+    "model_run_id", "symbol", "date", "horizon_days",
+    "y_pred", "y_true", "rank_value", "universe",
+]
+_MODEL_PRED_PK = ("model_run_id", "symbol", "date")
+
+
+def insert_model_run(
+    model_run_id: str,
+    model_type: str,
+    universe: str,
+    train_start: date,
+    train_end: date,
+    test_start: date,
+    test_end: date,
+    horizon_days: int,
+    target_type: str = "regression",
+    features: list[str] | None = None,
+    hyperparams: dict | None = None,
+    n_train_rows: int | None = None,
+    n_test_rows: int | None = None,
+    train_loss: float | None = None,
+    valid_loss: float | None = None,
+    notes: str | None = None,
+) -> None:
+    """Insert one row into model_runs. Caller generates model_run_id.
+
+    Recommended format: 'YYYYMMDD_HHMMSS_<type>_<universe>_fold<N>'.
+    """
+    with session_scope() as session:
+        session.add(ModelRun(
+            model_run_id=model_run_id,
+            model_type=model_type,
+            universe=universe,
+            train_start=train_start, train_end=train_end,
+            test_start=test_start, test_end=test_end,
+            horizon_days=horizon_days,
+            target_type=target_type,
+            features=features,
+            hyperparams=hyperparams,
+            n_train_rows=n_train_rows,
+            n_test_rows=n_test_rows,
+            train_loss=train_loss,
+            valid_loss=valid_loss,
+            notes=notes,
+        ))
+
+
+def upsert_model_predictions(df: pd.DataFrame) -> int:
+    """Bulk upsert model_predictions via COPY + ON CONFLICT.
+
+    Expects df columns to be a subset of MODEL_PREDICTION_COLUMNS.
+    Missing columns are NULLed out (except PK columns which are required).
+    """
+    if df.empty:
+        return 0
+
+    for col in MODEL_PREDICTION_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[MODEL_PREDICTION_COLUMNS].copy()
+
+    buf = StringIO()
+    df.to_csv(buf, index=False, header=False, sep="\t", na_rep="\\N")
+    buf.seek(0)
+
+    col_list = ", ".join(MODEL_PREDICTION_COLUMNS)
+    update_cols = [c for c in MODEL_PREDICTION_COLUMNS if c not in _MODEL_PRED_PK]
+    update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+
+    with raw_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TEMP TABLE tmp_model_preds "
+                "(LIKE model_predictions INCLUDING DEFAULTS) "
+                "ON COMMIT DROP"
+            )
+            with cur.copy(
+                f"COPY tmp_model_preds ({col_list}) FROM STDIN "
+                f"WITH (FORMAT CSV, DELIMITER E'\\t', NULL '\\N')"
+            ) as copy:
+                copy.write(buf.read())
+            cur.execute(
+                f"INSERT INTO model_predictions ({col_list}) "
+                f"SELECT {col_list} FROM tmp_model_preds "
+                f"ON CONFLICT (model_run_id, symbol, date) "
+                f"DO UPDATE SET {update_clause}"
+            )
+            affected = cur.rowcount
+    return affected
+
+
+def insert_feature_importance(
+    model_run_id: str,
+    importance: dict[str, float],
+    importance_type: str = "gain",
+) -> int:
+    """Insert feature importance rows for a model run.
+
+    `importance` keys = feature names, values = numeric importance.
+    Auto-ranks descending and writes the rank column.
+    Returns number of rows inserted.
+    """
+    if not importance:
+        return 0
+    # Sort descending by value for rank assignment
+    items = sorted(importance.items(), key=lambda kv: -(kv[1] or 0.0))
+    rows = []
+    for rank_idx, (name, val) in enumerate(items, start=1):
+        rows.append(ModelFeatureImportance(
+            model_run_id=model_run_id,
+            feature_name=name,
+            importance_type=importance_type,
+            importance=val,
+            rank=rank_idx,
+        ))
+    with session_scope() as session:
+        session.add_all(rows)
+    return len(rows)
+
+
+def query_model_predictions(
+    model_run_id: str | None = None,
+    start: date | None = None,
+    end: date | None = None,
+) -> pd.DataFrame:
+    """Read model_predictions.
+
+    Returns columns: model_run_id, symbol, date, horizon_days,
+    y_pred, y_true, rank_value, universe.
+    """
+    where = []
+    params: dict = {}
+    if model_run_id is not None:
+        where.append("model_run_id = :rid")
+        params["rid"] = model_run_id
+    if start is not None:
+        where.append("date >= :s")
+        params["s"] = start
+    if end is not None:
+        where.append("date <= :e")
+        params["e"] = end
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    sql = text(
+        "SELECT model_run_id, symbol, date, horizon_days, "
+        "y_pred, y_true, rank_value, universe "
+        f"FROM model_predictions {where_sql} "
+        "ORDER BY date, symbol"
+    )
+    with get_engine().connect() as conn:
+        return pd.read_sql(sql, conn, params=params)

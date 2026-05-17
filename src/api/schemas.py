@@ -354,6 +354,59 @@ class ConsensusHankyungRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Research: factor evaluation (POST /research/factor/evaluate)
+# ---------------------------------------------------------------------------
+
+
+class FactorEvalRequest(BaseModel):
+    """POST /research/factor/evaluate — 단일 팩터 평가.
+
+    모드:
+        factor_name 을 하나 지정하면 해당 팩터 단독 평가.
+
+    기간 기본값:
+        start_date = 오늘 기준 1년 전, end_date = 어제.
+    """
+
+    factor_name: str = Field(
+        ...,
+        description=(
+            "평가할 팩터 이름. 예: momentum_20d, pead_revenue_yoy, rev_eps_1m_fy1. "
+            "BASELINE_FACTORS / PEAD_FACTORS / RATING_FACTORS / REVISION_FACTORS / QUALITY_FACTORS "
+            "에 등록된 이름이어야 함."
+        ),
+    )
+    universe: str = Field("ALL", description="평가 universe. ALL / KOSPI / KOSDAQ / KOSPI200.")
+    start_date: date | None = Field(None, description="평가 시작일. None 이면 오늘 기준 1년 전.")
+    end_date: date | None = Field(None, description="평가 종료일. None 이면 어제.")
+    horizon_days: int = Field(5, ge=1, le=60, description="forward return horizon (일).")
+    persist_signals: bool = Field(False, description="팩터 신호를 factor_signals 에 저장할지 여부.")
+    persist_run: bool = Field(True, description="평가 결과를 eval_runs / eval_metrics 에 저장할지 여부.")
+
+
+class FactorEvalAllRequest(BaseModel):
+    """POST /research/factor/evaluate/all — 전체(또는 지정) 팩터 일괄 평가.
+
+    factors 를 지정하지 않으면 데이터가 있는 모든 팩터를 순서대로 평가.
+    개별 팩터 에러는 건너뛰고 나머지를 계속 진행함.
+    """
+
+    universe: str = Field("ALL", description="평가 universe.")
+    start_date: date | None = Field(None, description="평가 시작일. None 이면 오늘 기준 1년 전.")
+    end_date: date | None = Field(None, description="평가 종료일. None 이면 어제.")
+    horizon_days: int = Field(5, ge=1, le=60, description="forward return horizon (일).")
+    factors: list[str] | None = Field(
+        None,
+        description=(
+            "평가할 팩터 이름 목록. None 이면 전체 팩터 레지스트리에서 순서대로 실행. "
+            "예: [\"momentum_20d\", \"pead_revenue_yoy\"]"
+        ),
+    )
+    persist_signals: bool = Field(False, description="팩터 신호를 factor_signals 에 저장할지 여부.")
+    persist_run: bool = Field(True, description="평가 결과를 eval_runs / eval_metrics 에 저장할지 여부.")
+
+
+# ---------------------------------------------------------------------------
 # Composite: the default daily cron (POST /collect/daily-cron)
 # ---------------------------------------------------------------------------
 

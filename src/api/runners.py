@@ -735,6 +735,190 @@ async def submit_daily_cron(
     )
 
 
+
+# ---------------------------------------------------------------------------
+# Research: factor evaluation
+# ---------------------------------------------------------------------------
+
+# Canonical factor registry — all factors available for evaluation.
+# Merged from each sub-module at import time so a single list drives
+# both the REST API ("factors" param) and the scheduler.
+def _build_factor_registry() -> dict[str, dict]:
+    from src.research.factors_baseline import BASELINE_FACTORS
+    from src.research.factors_pead import PEAD_FACTORS
+    from src.research.factors_quality import QUALITY_FACTORS
+    from src.research.factors_rating import RATING_FACTORS
+    from src.research.factors_revision import REVISION_FACTORS
+
+    registry: dict[str, dict] = {}
+    registry.update(BASELINE_FACTORS)
+    registry.update(PEAD_FACTORS)
+    registry.update(QUALITY_FACTORS)
+    registry.update(RATING_FACTORS)
+    registry.update(REVISION_FACTORS)
+    return registry
+
+
+def _factor_eval_blocking(
+    *,
+    factors: list[str],
+    universe: str,
+    start: "date",
+    end: "date",
+    horizon_days: int,
+    persist_signals: bool,
+    persist_run: bool,
+) -> dict[str, Any]:
+    """Run evaluate_factor() for each factor in sequence.
+
+    Individual factor errors are caught and recorded; evaluation continues
+    for the remaining factors. Returns a summary dict with per-factor results.
+    """
+    from src.research.factor_eval import evaluate_factor
+
+    ok: list[str] = []
+    failed: dict[str, str] = {}
+    metrics_by_factor: dict[str, dict] = {}
+
+    for fname in factors:
+        try:
+            _, metrics, _ = evaluate_factor(
+                fname, universe, start, end,
+                horizon_days=horizon_days,
+                persist_signals=persist_signals,
+                persist_run=persist_run,
+                ensure_forward_returns=False,
+            )
+            ok.append(fname)
+            metrics_by_factor[fname] = {
+                k: (float(v) if v is not None else None)
+                for k, v in metrics.items()
+                if k in ("ic_mean", "rank_ic_mean", "icir", "rank_icir",
+                         "hit_rate", "long_short_sharpe", "long_short_return",
+                         "max_drawdown")
+            }
+            logger.info(
+                f"[factor_eval] {fname}: "
+                f"IC={metrics.get('ic_mean'):.4f}  "
+                f"ICIR={metrics.get('icir'):.4f}  "
+                f"LS_SR={metrics.get('long_short_sharpe'):.4f}"
+            )
+        except Exception as e:  # noqa: BLE001
+            failed[fname] = str(e)[:200]
+            logger.warning(f"[factor_eval] {fname} failed: {e}")
+
+    return {
+        "universe": universe,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "horizon_days": horizon_days,
+        "ok": ok,
+        "failed": failed,
+        "metrics": metrics_by_factor,
+        "total": len(factors),
+        "n_ok": len(ok),
+        "n_failed": len(failed),
+    }
+
+
+async def submit_factor_eval(
+    *,
+    factor_name: str,
+    universe: str = "ALL",
+    start_date: "date | None" = None,
+    end_date: "date | None" = None,
+    horizon_days: int = 5,
+    persist_signals: bool = False,
+    persist_run: bool = True,
+) -> JobRecord:
+    """단일 팩터 평가를 비동기 잡으로 제출.
+
+    Args:
+        factor_name:     평가할 팩터 이름 (레지스트리에 등록된 이름).
+        universe:        평가 universe (ALL / KOSPI / KOSDAQ / KOSPI200).
+        start_date:      평가 시작일. None 이면 오늘 기준 1년 전.
+        end_date:        평가 종료일. None 이면 어제.
+        horizon_days:    forward return horizon (일).
+        persist_signals: factor_signals 테이블에 신호 저장 여부.
+        persist_run:     eval_runs / eval_metrics 테이블에 결과 저장 여부.
+    """
+    from datetime import date as _date, timedelta as _td
+
+    eff_end = end_date or (_date.today() - _td(days=1))
+    eff_start = start_date or (eff_end - _td(days=365))
+
+    params: dict[str, Any] = {
+        "factor_name": factor_name,
+        "universe": universe,
+        "start_date": eff_start.isoformat(),
+        "end_date": eff_end.isoformat(),
+        "horizon_days": horizon_days,
+        "persist_signals": persist_signals,
+        "persist_run": persist_run,
+    }
+    return await _run_async_locked(
+        CollectorName.FACTOR_EVAL, params, _factor_eval_blocking,
+        factors=[factor_name],
+        universe=universe,
+        start=eff_start,
+        end=eff_end,
+        horizon_days=horizon_days,
+        persist_signals=persist_signals,
+        persist_run=persist_run,
+    )
+
+
+async def submit_factor_eval_all(
+    *,
+    universe: str = "ALL",
+    start_date: "date | None" = None,
+    end_date: "date | None" = None,
+    horizon_days: int = 5,
+    factors: "list[str] | None" = None,
+    persist_signals: bool = False,
+    persist_run: bool = True,
+) -> JobRecord:
+    """전체(또는 지정) 팩터 일괄 평가를 비동기 잡으로 제출.
+
+    Args:
+        factors: None 이면 전체 레지스트리 팩터를 순서대로 평가.
+                 리스트를 지정하면 해당 팩터만 평가.
+    """
+    from datetime import date as _date, timedelta as _td
+
+    eff_end = end_date or (_date.today() - _td(days=1))
+    eff_start = start_date or (eff_end - _td(days=365))
+
+    registry = _build_factor_registry()
+    target_factors = factors if factors is not None else list(registry.keys())
+
+    # Validate factor names upfront
+    unknown = [f for f in target_factors if f not in registry]
+    if unknown:
+        raise ValueError(f"Unknown factor(s): {unknown}. "
+                         f"Available: {list(registry.keys())}")
+
+    params: dict[str, Any] = {
+        "universe": universe,
+        "start_date": eff_start.isoformat(),
+        "end_date": eff_end.isoformat(),
+        "horizon_days": horizon_days,
+        "factors": target_factors,
+        "persist_signals": persist_signals,
+        "persist_run": persist_run,
+    }
+    return await _run_async_locked(
+        CollectorName.FACTOR_EVAL, params, _factor_eval_blocking,
+        factors=target_factors,
+        universe=universe,
+        start=eff_start,
+        end=eff_end,
+        horizon_days=horizon_days,
+        persist_signals=persist_signals,
+        persist_run=persist_run,
+    )
+
+
 __all__ = [
     # sync runs
     "run_tickers_kr",
@@ -750,4 +934,7 @@ __all__ = [
     "submit_consensus_fnguide",
     "submit_consensus_hankyung",
     "submit_daily_cron",
+    # research
+    "submit_factor_eval",
+    "submit_factor_eval_all",
 ]

@@ -116,6 +116,12 @@ services:
       SCHEDULER_DAILY_CRON: ${SCHEDULER_DAILY_CRON:-0 3 * * *}
       SCHEDULER_TIMEZONE: ${SCHEDULER_TIMEZONE:-Asia/Seoul}
 
+      # --- Factor evaluation schedule (기본 비활성화) ---
+      # .env 에 FACTOR_EVAL_ENABLED=true 를 추가하면 활성화됨.
+      FACTOR_EVAL_ENABLED: ${FACTOR_EVAL_ENABLED:-false}
+      SCHEDULER_FACTOR_EVAL_CRON: ${SCHEDULER_FACTOR_EVAL_CRON:-0 4 * * 0}
+      FACTOR_EVAL_HORIZON_DAYS: ${FACTOR_EVAL_HORIZON_DAYS:-5}
+
       # --- Logging ---
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_DIR: /app/data/logs

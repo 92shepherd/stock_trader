@@ -92,6 +92,9 @@ class CollectorName(str, Enum):
     # composite lock is the only thing guarding them during the cron.
     DAILY_CRON = "daily_cron"
 
+    # Research — factor signal computation + evaluation
+    FACTOR_EVAL = "factor_eval"
+
 
 # Magic prefix for the advisory-lock key high half: ASCII "ST\\0\\0".
 # Keeps our keys in a recognizable, project-scoped namespace inside the

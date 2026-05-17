@@ -38,13 +38,18 @@ from typing import Any
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from src.api.runners import submit_consensus_hankyung, submit_daily_cron
+from src.api.runners import (
+    submit_consensus_hankyung,
+    submit_daily_cron,
+    submit_factor_eval_all,
+)
 from src.utils.logger import logger
 
 
 # Job IDs (stable strings so /schedule endpoints can address them).
 JOB_ID_DAILY_CRON = "daily_kis_dart_cron"
 JOB_ID_HANKYUNG_CRON = "daily_hankyung_cron"
+JOB_ID_FACTOR_EVAL_CRON = "weekly_factor_eval_cron"
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +82,31 @@ def _hankyung_enabled() -> bool:
     기본값 False — docker-compose.gcp-db.yml 에서만 'true' 로 설정됨.
     """
     return _env_bool("HANKYUNG_ENABLED", False)
+
+
+def _factor_eval_enabled() -> bool:
+    """FACTOR_EVAL_ENABLED 환경변수로 팩터 평가 스케줄 잡 활성화 여부 결정.
+
+    기본값 False. 명시적으로 true 로 설정해야 활성화됨.
+    """
+    return _env_bool("FACTOR_EVAL_ENABLED", False)
+
+
+def _factor_eval_cron_expression() -> str:
+    """SCHEDULER_FACTOR_EVAL_CRON 환경변수. 기본: 매주 일요일 04:00 KST."""
+    return (
+        os.getenv("SCHEDULER_FACTOR_EVAL_CRON", "0 4 * * 0").strip()
+        or "0 4 * * 0"
+    )
+
+
+def _factor_eval_horizon_days() -> int:
+    """FACTOR_EVAL_HORIZON_DAYS 환경변수. 기본 5일."""
+    raw = os.getenv("FACTOR_EVAL_HORIZON_DAYS", "5").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return 5
 
 
 def _daily_cron_only() -> str | None:
@@ -131,6 +161,28 @@ async def _scheduled_daily_cron() -> None:
         # marked rejected/failed instead) but guard anyway: a scheduler
         # crash terminates *all* future runs, so we eat the exception.
         logger.exception(f"[scheduler] daily cron submission failed: {e}")
+
+
+async def _scheduled_factor_eval_cron() -> None:
+    """팩터 평가 주간 스케줄 잡 — 전체 팩터를 순서대로 평가.
+
+    FACTOR_EVAL_ENABLED=true 일 때만 register_default_jobs() 에서 등록됨.
+    기간: 오늘 기준 1년 전 ~ 어제 (매주 갱신).
+    horizon_days: FACTOR_EVAL_HORIZON_DAYS (기본 5).
+    persist_signals=False (디스크 절약), persist_run=True.
+    """
+    logger.info("[scheduler] firing weekly factor eval cron")
+    try:
+        record = await submit_factor_eval_all(
+            horizon_days=_factor_eval_horizon_days(),
+            persist_signals=False,
+            persist_run=True,
+        )
+        logger.info(
+            f"[scheduler] submitted job_id={record.id} for factor eval cron"
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"[scheduler] factor eval cron submission failed: {e}")
 
 
 async def _scheduled_hankyung_cron() -> None:
@@ -226,6 +278,23 @@ def register_default_jobs(scheduler: AsyncIOScheduler) -> list[dict[str, Any]]:
             "(HANKYUNG_ENABLED is not set to true)"
         )
 
+    if _factor_eval_enabled():
+        eval_cron_expr = _factor_eval_cron_expression()
+        eval_trigger = CronTrigger.from_crontab(eval_cron_expr, timezone=_timezone_name())
+        scheduler.add_job(
+            _scheduled_factor_eval_cron,
+            trigger=eval_trigger,
+            id=JOB_ID_FACTOR_EVAL_CRON,
+            name="Weekly factor evaluation (전체 팩터 IC/ICIR/Sharpe)",
+            replace_existing=True,
+        )
+        registered.append({"id": JOB_ID_FACTOR_EVAL_CRON, "cron": eval_cron_expr})
+    else:
+        logger.info(
+            "[scheduler] factor eval cron not registered "
+            "(FACTOR_EVAL_ENABLED is not set to true)"
+        )
+
     return registered
 
 
@@ -273,6 +342,7 @@ def stop_scheduler(scheduler: AsyncIOScheduler | None) -> None:
 __all__ = [
     "JOB_ID_DAILY_CRON",
     "JOB_ID_HANKYUNG_CRON",
+    "JOB_ID_FACTOR_EVAL_CRON",
     "build_scheduler",
     "register_default_jobs",
     "start_scheduler",
