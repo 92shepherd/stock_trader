@@ -122,6 +122,12 @@ services:
       SCHEDULER_FACTOR_EVAL_CRON: ${SCHEDULER_FACTOR_EVAL_CRON:-0 4 * * 0}
       FACTOR_EVAL_HORIZON_DAYS: ${FACTOR_EVAL_HORIZON_DAYS:-5}
 
+      # --- 분봉 실시간 수집 (기본 비활성화, GCP 모드에서는 사용 안 함) ---
+      # .env 에 MINUTE_REALTIME_ENABLED=true 를 추가하면 매분 장중 수집 활성화.
+      # MINUTE_REALTIME_SYMBOLS=005930,000660 으로 특정 종목만 지정 가능 (기본=전체).
+      MINUTE_REALTIME_ENABLED: ${MINUTE_REALTIME_ENABLED:-false}
+      MINUTE_REALTIME_SYMBOLS: ${MINUTE_REALTIME_SYMBOLS:-}
+
       # --- Logging ---
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_DIR: /app/data/logs

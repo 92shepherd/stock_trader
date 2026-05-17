@@ -32,11 +32,13 @@ Cron expression:
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from src.api.runners import (
     submit_consensus_hankyung,
@@ -50,6 +52,7 @@ from src.utils.logger import logger
 JOB_ID_DAILY_CRON = "daily_kis_dart_cron"
 JOB_ID_HANKYUNG_CRON = "daily_hankyung_cron"
 JOB_ID_FACTOR_EVAL_CRON = "weekly_factor_eval_cron"
+JOB_ID_MINUTE_REALTIME = "minute_realtime_cron"
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +110,27 @@ def _factor_eval_horizon_days() -> int:
         return int(raw)
     except ValueError:
         return 5
+
+
+def _minute_realtime_enabled() -> bool:
+    """MINUTE_REALTIME_ENABLED 환경변수. 기본 False.
+
+    docker-compose.yml (로컬/일반 모드) 에서만 활성화.
+    docker-compose.gcp-db.yml 에는 설정하지 않아 비활성 유지.
+    """
+    return _env_bool("MINUTE_REALTIME_ENABLED", False)
+
+
+def _minute_realtime_symbols() -> list[str] | None:
+    """MINUTE_REALTIME_SYMBOLS: 쉼표 구분 종목코드 목록.
+
+    빈값이면 None 반환 → 잡에서 전체 활성 종목 사용.
+    예: MINUTE_REALTIME_SYMBOLS=005930,000660,035720
+    """
+    raw = os.getenv("MINUTE_REALTIME_SYMBOLS", "").strip()
+    if not raw:
+        return None
+    return [s.strip().zfill(6) for s in raw.split(",") if s.strip()]
 
 
 def _daily_cron_only() -> str | None:
@@ -208,6 +232,46 @@ async def _scheduled_hankyung_cron() -> None:
         logger.exception(f"[scheduler] hankyung cron submission failed: {e}")
 
 
+async def _scheduled_minute_realtime() -> None:
+    """매분 실행 — 장중 최신 1분봉 수집.
+
+    MINUTE_REALTIME_ENABLED=true 일 때만 register_default_jobs() 에서 등록됨.
+    장외 시간(주말 포함 09:00~15:35 KST 이외)에는 collect_latest_bars 내부에서
+    즉시 스킵하므로 스케줄러 자체는 항상 매분 발화해도 무방.
+
+    MINUTE_REALTIME_SYMBOLS 가 설정된 경우 해당 종목만, 미설정 시 전체 활성 종목.
+    수집 결과는 DEBUG 레벨로만 기록 (분당 로그 범람 방지).
+    """
+    from src.collectors.minute_kis import collect_latest_bars
+    from src.config import get_app_config
+    from src.db.repositories import get_active_tickers
+
+    symbols = _minute_realtime_symbols()
+    if symbols is None:
+        cfg = get_app_config()
+        tickers = get_active_tickers(markets=cfg.markets)
+        symbols = [t.symbol for t in tickers]
+
+    if not symbols:
+        return
+
+    try:
+        result = await asyncio.to_thread(collect_latest_bars, symbols)
+        if result.get("skipped_market_closed"):
+            logger.info(
+                f"[minute_realtime] skipped — market closed "
+                f"(symbols={result['n_symbols']})"
+            )
+        else:
+            logger.info(
+                f"[minute_realtime] rows={result['total_rows']} "
+                f"ok={result['n_ok']} failed={result['n_failed']} "
+                f"symbols={result['n_symbols']}"
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"[minute_realtime] job error: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Scheduler lifecycle
 # ---------------------------------------------------------------------------
@@ -295,6 +359,32 @@ def register_default_jobs(scheduler: AsyncIOScheduler) -> list[dict[str, Any]]:
             "(FACTOR_EVAL_ENABLED is not set to true)"
         )
 
+    if _minute_realtime_enabled():
+        minute_symbols = _minute_realtime_symbols()
+        symbol_desc = (
+            f"{len(minute_symbols)}개 종목" if minute_symbols else "전체 활성 종목"
+        )
+        scheduler.add_job(
+            _scheduled_minute_realtime,
+            trigger=IntervalTrigger(minutes=1, timezone=_timezone_name()),
+            id=JOB_ID_MINUTE_REALTIME,
+            name=f"분봉 실시간 수집 ({symbol_desc}, 장중 09:00~15:35 KST)",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=30,
+        )
+        registered.append({"id": JOB_ID_MINUTE_REALTIME, "interval": "1min"})
+        logger.info(
+            f"[scheduler] minute realtime registered — {symbol_desc} "
+            f"(MINUTE_REALTIME_SYMBOLS={'set' if minute_symbols else 'unset=all'})"
+        )
+    else:
+        logger.info(
+            "[scheduler] minute realtime not registered "
+            "(MINUTE_REALTIME_ENABLED is not set to true)"
+        )
+
     return registered
 
 
@@ -315,8 +405,9 @@ def start_scheduler() -> AsyncIOScheduler | None:
     registered = register_default_jobs(scheduler)
     scheduler.start()
     for r in registered:
+        schedule_desc = r.get("cron") or r.get("interval") or "?"
         logger.info(
-            f"[scheduler] registered job id={r['id']} cron={r['cron']!r} "
+            f"[scheduler] registered job id={r['id']} schedule={schedule_desc!r} "
             f"tz={_timezone_name()}"
         )
     return scheduler
@@ -343,6 +434,7 @@ __all__ = [
     "JOB_ID_DAILY_CRON",
     "JOB_ID_HANKYUNG_CRON",
     "JOB_ID_FACTOR_EVAL_CRON",
+    "JOB_ID_MINUTE_REALTIME",
     "build_scheduler",
     "register_default_jobs",
     "start_scheduler",

@@ -1,30 +1,29 @@
 """KIS 1분봉 수집기.
 
 수집 단위:
-    (symbol, date) 쌍. 날짜별로 09:00~15:30 전체 1분봉을 수집.
+    symbol × 날짜. 날짜별로 09:00~15:30 전체 1분봉을 수집.
 
-거래 가능 기간:
-    최근 30거래일 (KIS API 제약). start_date 가 이보다 오래되면 자동으로 클램프.
+⚠️  KIS API 제약:
+    inquire-time-itemchartprice (FHKST03010200) 는 **당일 데이터만** 지원.
+    FID_PW_DATA_INCU_YN 은 과거 날짜 조회가 아닌 업종 시간대 포함 여부.
+    따라서 target_date 는 반드시 오늘(장중/장마감 후) 또는
+    FID_PW_DATA_INCU_YN="Y" 로 이전 날짜 경계를 건너는 방식 한정.
+
+현실적 수집 범위:
+    - 오늘 당일 분봉 수집 (장중 or 장마감 후 15:30~)
+    - target_date 를 명시하면 FID_PW_DATA_INCU_YN="Y" 로 전일 페이징을 시도하나,
+      KIS가 거부하는 경우 당일 데이터만 반환됨.
+    - 과거 분봉 데이터가 필요하면 PyKRX 등 별도 소스 활용 권장.
 
 페이징:
-    KIS inquire-time-itemchartprice 는 1회에 최대 30봉.
-    하루(390봉) 수집에 ~13번 API 호출 필요.
-    target_date 가 N거래일 전이면 중간 날짜들도 페이징으로 통과해야 하므로
-    오래된 날짜일수록 호출 횟수가 증가함 (N=1: ~26회, N=20: ~260회/종목).
+    cursor = "153000" 부터 역방향 30봉씩. 하루(390봉) = ~13 호출.
 
-성능 가이드:
-    - 전체 활성 종목(~2,600개)에 대해 30거래일 수집은 수십 시간 소요.
-    - 실사용 권장: symbols 파라미터로 대상 종목을 명시하거나,
-      force_full_universe=True 플래그를 명시적으로 설정.
-
-거래대금(value) 산출:
-    KIS API 는 누적거래대금(acml_tr_pbmn)만 제공.
-    같은 날짜 내 연속 봉의 차분으로 분봉 거래대금을 계산.
-    첫 봉(09:00)은 acml_tr_pbmn 값을 그대로 사용.
+거래대금(value):
+    acml_tr_pbmn(누적) 차분으로 분봉별 거래대금 계산.
 
 Rate limit:
-    real:  20 rps → 15 rps target → 67ms/call
-    paper:  5 rps →  4 rps target → 250ms/call
+    real:  20 rps → 10 rps 목표 → 100ms/call
+    paper:  5 rps → 2.5 rps 목표 → 400ms/call
 """
 from __future__ import annotations
 
@@ -51,7 +50,9 @@ from src.utils.logger import logger
 COLLECTOR_NAME = "minute_kis"
 
 # KIS API 분봉 조회 최대 기간 (거래일 기준 약 30일 → 42 캘린더일)
-MAX_LOOKBACK_CALENDAR_DAYS = 42
+# KIS는 당일 ��이터만 지원 — target_date 는 오늘만 의미 있음.
+# 안전 마진으로 최대 2 캘린더일(전일 포함)까지만 허용.
+MAX_LOOKBACK_CALENDAR_DAYS = 2
 
 _DEFAULT_DELAY_BY_MODE = {
     # 분봉 API는 일봉보다 호출 밀도가 높으므로 보수적으로 설정.
@@ -328,4 +329,73 @@ def backfill_minutes(
         "n_ok": n_ok,
         "n_skipped": n_skipped,
         "n_failed": n_failed,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 실시간 수집 — 매분 스케줄러 전용
+# ---------------------------------------------------------------------------
+
+def collect_latest_bars(
+    symbols: list[str],
+    *,
+    request_delay: float | None = None,
+) -> dict[str, Any]:
+    """현재 시각 기준 최근 봉을 종목별로 1회 호출해 upsert.
+
+    매분 스케줄러 잡에서 호출되는 함수.
+    각 종목마다 KIS API 1회 호출 → 최근 30봉(당일) 수신 → upsert.
+
+    Args:
+        symbols:       수집 대상 종목코드 리스트.
+        request_delay: API 호출 간격(초). None=모드 기본값.
+
+    Returns:
+        {total_rows, n_symbols, n_ok, n_failed, skipped_market_closed}
+    """
+    from src.kis.market_status import is_market_open
+    if not is_market_open():
+        return {
+            "total_rows": 0,
+            "n_symbols": len(symbols),
+            "n_ok": 0,
+            "n_failed": 0,
+            "skipped_market_closed": True,
+        }
+
+    if request_delay is None:
+        mode = get_kis_auth().mode
+        request_delay = _DEFAULT_DELAY_BY_MODE.get(mode, 0.4)
+
+    kis_minute = get_kis_minute()
+    total_rows = 0
+    n_ok = 0
+    n_failed = 0
+
+    for symbol in symbols:
+        try:
+            bars = kis_minute.fetch_latest(symbol)
+            time.sleep(request_delay)
+            if not bars:
+                continue
+            df = _bars_to_df(symbol, bars)
+            if df.empty:
+                continue
+            rows = upsert_minute_prices(df)
+            total_rows += rows
+            n_ok += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[minute_realtime] {symbol} failed: {e}")
+            n_failed += 1
+
+    logger.debug(
+        f"[minute_realtime] rows={total_rows} ok={n_ok} failed={n_failed} "
+        f"symbols={len(symbols)}"
+    )
+    return {
+        "total_rows": total_rows,
+        "n_symbols": len(symbols),
+        "n_ok": n_ok,
+        "n_failed": n_failed,
+        "skipped_market_closed": False,
     }

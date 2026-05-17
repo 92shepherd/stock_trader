@@ -190,6 +190,33 @@ class KISMinute:
         return output2 if isinstance(output2, list) else []
 
 
+    def fetch_latest(
+        self,
+        symbol: str,
+    ) -> list[dict[str, Any]]:
+        """현재 KST 시각 기준 최근 최대 30봉 반환 (당일 필터).
+
+        실시간/장중 수집 전용. 단일 API 호출만 수행 (페이징 없음).
+        request_delay 는 호출자(collector)에서 관리.
+
+        Returns:
+            시간 오름차순(oldest first) 정렬된 당일 bar list.
+            장외 시간이거나 데이터 없으면 빈 리스트.
+        """
+        from zoneinfo import ZoneInfo
+        now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+        today_str = now_kst.strftime("%Y%m%d")
+        cursor = now_kst.strftime("%H%M%S")
+
+        page = self._call(symbol, cursor)
+
+        bars = [b for b in page if b.get("stck_bsop_date") == today_str]
+        bars.sort(
+            key=lambda b: (b.get("stck_bsop_date", ""), b.get("stck_cntg_hour", ""))
+        )
+        return bars
+
+
 # ---------------------------------------------------------------------------
 # Module-level singleton
 # ---------------------------------------------------------------------------
@@ -207,6 +234,7 @@ def get_kis_minute() -> KISMinute:
 
 __all__ = [
     "KISMinute",
+    "KISRateLimitError",
     "get_kis_minute",
     "MARKET_OPEN_STR",
     "MARKET_CLOSE_STR",
