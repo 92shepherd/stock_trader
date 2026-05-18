@@ -539,6 +539,154 @@ class HealthResponse(BaseModel):
     db_ok: bool
 
 
+# ---------------------------------------------------------------------------
+# EOD bots
+# ---------------------------------------------------------------------------
+
+# 기본 시드 자본 (REST 에서 명시하지 않을 때). 1천만원.
+DEFAULT_BOT_SEED_CASH: int = 10_000_000
+
+
+class BotCreateRequest(BaseModel):
+    """POST /bots — 새 EOD 봇 생성.
+
+    봇 생성 시 strategy_kind 에 따라 둘 중 하나만 채우면 된다:
+      - declarative: declarative_spec(JSONB) 명세
+      - plugin:      plugin_strategy_id (registry 에 등록된 이름)
+
+    seed_cash 가 None 이면 DEFAULT_BOT_SEED_CASH 사용.
+    """
+    name: str = Field(
+        ..., min_length=1, max_length=64,
+        description="봇 이름 (UNIQUE). 예: 'momentum_quality_blend_v1'.",
+    )
+    strategy_kind: Literal["declarative", "plugin"] = Field(
+        ..., description="전략 표현 방식.",
+    )
+    universe: Literal["KOSPI", "KOSDAQ", "ALL", "KOSPI200"] = Field(
+        "KOSPI", description="봇이 거래할 universe.",
+    )
+    seed_cash: int | None = Field(
+        None,
+        ge=1_000_000,
+        le=10_000_000_000,
+        description=(
+            "시드 자본 (KRW). None 이면 기본값 10,000,000 (1천만원) 사용."
+        ),
+    )
+    declarative_spec: dict | None = Field(
+        None,
+        description=(
+            "declarative 전략의 JSONB 명세. strategy_kind='declarative' 일 때 필수. "
+            "src.trading.strategy.declarative.StrategySpec 의 구조와 일치해야 함."
+        ),
+    )
+    plugin_strategy_id: str | None = Field(
+        None,
+        max_length=64,
+        description=(
+            "plugin 전략 식별자. registry 에 등록된 이름. strategy_kind='plugin' 일 때 필수."
+        ),
+    )
+    notes: str | None = Field(None, description="자유 메모.")
+
+    @field_validator("name")
+    @classmethod
+    def _name_clean(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("name cannot be empty")
+        return v
+
+
+class BotPatchSpecRequest(BaseModel):
+    """PATCH /bots/{bot_id}/spec — 봇 전략 spec 업데이트.
+
+    봇이 STOPPED 상태면 거부됨. spec_version 은 서버가 자동 증가.
+    """
+    strategy_kind: Literal["declarative", "plugin"]
+    declarative_spec: dict | None = None
+    plugin_strategy_id: str | None = None
+    reason: str | None = Field(
+        None, description="변경 사유 메모. spec_history.reason 에 저장.",
+    )
+
+
+class BotStopRequest(BaseModel):
+    """POST /bots/{bot_id}/stop — 봇 정지.
+
+    정지 후에는 어떤 거래도 발생하지 않으며, 다시 시작 불가.
+    """
+    reason: str | None = Field(None, description="정지 사유 메모.")
+
+
+class BotTickRequest(BaseModel):
+    """POST /bots/{bot_id}/tick — 수동 daily tick (디버그/시뮬).
+
+    decision_date 미지정 시 최신 영업일 사용.
+    """
+    decision_date: date | None = Field(
+        None,
+        description="tick 의 결정일. None 이면 latest_business_day().",
+    )
+
+
+class BotSummary(BaseModel):
+    """v_eod_bot_summary 한 줄을 그대로 반환."""
+    bot_id: str
+    name: str
+    state: str
+    strategy_kind: str
+    plugin_strategy_id: str | None
+    universe: str
+    seed_cash: float
+    cash: float
+    holdings_value: float
+    total_value: float
+    pnl: float
+    return_pct: float | None
+    last_tick_date: date | None
+    created_at: str
+    started_at: str | None
+    stopped_at: str | None
+    final_pnl: float | None
+    final_return_pct: float | None
+    total_orders: int
+    current_spec_version: int | None
+
+
+class BotListResponse(BaseModel):
+    bots: list[BotSummary]
+
+
+class BotTickResponse(BaseModel):
+    """단일 tick 실행 결과."""
+    bot_id: str
+    decision_date: date
+    status: Literal["SUCCESS", "SKIPPED", "FAILED"]
+    run_id: str | None = None
+    reason: str | None = None
+    n_buys: int | None = None
+    n_sells: int | None = None
+    total_value: float | None = None
+    error: str | None = None
+
+
+class FactorInfo(BaseModel):
+    """Factor catalog entry — GET /bots/factors 에서 반환."""
+    name: str
+    category: str
+    description: str
+    higher_is_better: bool
+
+
+class StrategyInfo(BaseModel):
+    """Plugin strategy registry entry — GET /bots/strategies 에서 반환."""
+    name: str
+    class_name: str
+    module: str
+
+
 __all__ = [
     # generic
     "JobAcceptedResponse",
@@ -564,4 +712,15 @@ __all__ = [
     "SchedulePauseResponse",
     # health
     "HealthResponse",
+    # EOD bots
+    "DEFAULT_BOT_SEED_CASH",
+    "BotCreateRequest",
+    "BotPatchSpecRequest",
+    "BotStopRequest",
+    "BotTickRequest",
+    "BotSummary",
+    "BotListResponse",
+    "BotTickResponse",
+    "FactorInfo",
+    "StrategyInfo",
 ]

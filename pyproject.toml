@@ -66,6 +66,13 @@ packages = [
     "src.kis",
     "src.pipelines",
     "src.research",
+    "src.trading",
+    "src.trading.bot",
+    "src.trading.factors",
+    "src.trading.repositories",
+    "src.trading.simulator",
+    "src.trading.strategy",
+    "src.trading.strategy.strategies",
     "src.utils",
 ]
 
