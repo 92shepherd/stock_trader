@@ -164,24 +164,35 @@ class KISMinute:
             logger.error(f"[kis_minute] transport error: {e}")
             raise
 
-        if resp.status_code >= 400:
-            raise KISQuotationsError(
-                f"KIS HTTP {resp.status_code} [{TR_MINUTE_CHART}]: {resp.text[:300]}"
-            )
-
         try:
             payload = resp.json()
-        except ValueError as e:
+        except ValueError:
+            payload = None
+
+        # EGW00201(rate limit)은 HTTP 500으로 내려오는 경우가 있으므로
+        # status 체크 전에 body를 먼저 파싱해 KISRateLimitError로 분류한다.
+        if payload is not None and payload.get("msg_cd") == "EGW00201":
+            msg1 = payload.get("msg1", "").strip()
+            raise KISRateLimitError(
+                f"KIS {TR_MINUTE_CHART} [EGW00201]: {msg1}"
+            )
+
+        if resp.status_code >= 400:
+            body = payload if payload is not None else resp.text[:300]
             raise KISQuotationsError(
-                f"KIS {TR_MINUTE_CHART}: response is not JSON: {e}"
-            ) from e
+                f"KIS HTTP {resp.status_code} [{TR_MINUTE_CHART}]: {body}"
+            )
+
+        if payload is None:
+            raise KISQuotationsError(
+                f"KIS {TR_MINUTE_CHART}: response is not JSON"
+            )
 
         rt_cd = payload.get("rt_cd")
         if rt_cd != "0":
             msg_cd = payload.get("msg_cd", "")
             msg1 = payload.get("msg1", "").strip()
             err_msg = f"KIS {TR_MINUTE_CHART} [{msg_cd}]: {msg1 or str(payload)[:200]}"
-            # EGW00201: 초당 거래건수 초과 → 재시도 가능한 rate limit 오류
             if msg_cd == "EGW00201":
                 raise KISRateLimitError(err_msg)
             raise KISQuotationsError(err_msg)

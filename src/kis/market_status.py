@@ -1,15 +1,20 @@
 """KIS 장 개설 여부 실시간 확인.
 
 inquire-price (FHKST01010100) 응답의 iscd_stat_cls_code 필드로 판단:
-    "20"  → 장중 (정규장 거래 시간)
-    "00"  → 장전
-    "40"  → 장후
-    "51"  → 장전 시간외 단일가
-    "52"  → 장후 시간외 단일가
-    그 외 → 불명 (비개장으로 취급)
+    "20"  → 장중 (정규장 거래 시간) → 즉시 True
+    "00"  → 장전              ┐
+    "40"  → 장후              │ → 즉시 False
+    "51"  → 장전 시간외 단일가 │
+    "52"  → 장후 시간외 단일가 ┘
+    그 외 → KST 시간 기반 fallback (09:00~15:30 평일)
 
 공휴일에는 마지막 거래일 기준 "40" 또는 "00" 이 반환되므로
-단순 시각 비교보다 정확하게 휴장일을 처리할 수 있다.
+명시적 비장중 코드가 확인되면 즉시 False로 처리한다.
+
+KST 시간 기반 fallback:
+    API가 미정의 코드("55" 등) 또는 오류("")를 반환할 경우
+    평일 09:00~15:30 KST 범위를 기준으로 판단한다.
+    공휴일에 API가 "00"/"40"을 반환하면 위 명시적 코드로 처리됨.
 
 캐시 전략:
     CACHE_TTL_SECONDS(기본 60s) 동안 API 재호출 없이 캐시 값 반환.
@@ -21,7 +26,7 @@ inquire-price (FHKST01010100) 응답의 iscd_stat_cls_code 필드로 판단:
     (명백한 비개장 시간대에 불필요한 API 소모 방지)
 
 오류 처리:
-    네트워크·인증 오류 시 False 반환 (보수적 처리 — 수집 스킵).
+    네트워크·인증 오류 시 KST 시간 기반 fallback 적용 (보수적 처리).
     오류는 WARNING 레벨로 기록하여 운영 가시성 유지.
 """
 from __future__ import annotations
@@ -44,12 +49,20 @@ _TR_INQUIRE_PRICE = "FHKST01010100"
 # 삼성전자 — 항상 상장된 대표 종목. 시세 조회로 장 상태 판별.
 _STATUS_SYMBOL = "005930"
 
-# 장중 상태 코드
+# 장중 확정 코드
 _CODE_TRADING = "20"
+
+# 비장중 확정 코드 — 이 코드가 반환되면 즉시 False
+# "00":장전 / "40":장후 / "51":장전시간외단일가 / "52":장후시간외
+_CODES_CLOSED = frozenset({"00", "40", "51", "52"})
 
 # 명백히 비개장인 KST 시각 범위 (API 호출 없이 스킵)
 _BROAD_START_H = 7   # 07:00 이전
 _BROAD_END_H = 17    # 17:00 이후
+
+# 정규장 KST 시간 범위 (fallback 판단용)
+_MARKET_OPEN_H, _MARKET_OPEN_M = 9, 0
+_MARKET_CLOSE_H, _MARKET_CLOSE_M = 15, 30
 
 CACHE_TTL_SECONDS: float = 60.0
 
@@ -79,6 +92,16 @@ def _is_obviously_closed() -> bool:
     if now.hour < _BROAD_START_H or now.hour >= _BROAD_END_H:
         return True
     return False
+
+
+def _is_market_hour_kst() -> bool:
+    """KST 09:00~15:30 평일이면 True. 공휴일은 미처리(API fallback 용도)."""
+    now = datetime.now(KST)
+    if now.weekday() >= 5:
+        return False
+    open_dt = now.replace(hour=_MARKET_OPEN_H, minute=_MARKET_OPEN_M, second=0, microsecond=0)
+    close_dt = now.replace(hour=_MARKET_CLOSE_H, minute=_MARKET_CLOSE_M, second=0, microsecond=0)
+    return open_dt <= now <= close_dt
 
 
 def _fetch_status_code() -> str:
@@ -157,7 +180,26 @@ def is_market_open(*, force_refresh: bool = False) -> bool:
         return _cache["open"]
 
     code = _fetch_status_code()
-    is_open = code == _CODE_TRADING
+
+    if code == _CODE_TRADING:
+        # "20": KIS 명시 장중
+        is_open = True
+    elif code in _CODES_CLOSED:
+        # "00"/"40"/"51"/"52": KIS 명시 비장중 (공휴일 포함)
+        is_open = False
+    else:
+        # 미정의 코드("55" 등) 또는 API 오류("") → KST 시간 기반 fallback
+        is_open = _is_market_hour_kst()
+        if code:
+            logger.warning(
+                f"[market_status] unknown iscd_stat_cls_code={code!r}, "
+                f"falling back to KST time check → {'open' if is_open else 'closed'}"
+            )
+        else:
+            logger.debug(
+                f"[market_status] API error (empty code), "
+                f"KST time fallback → {'open' if is_open else 'closed'}"
+            )
 
     _cache["ts"] = now_ts
     _cache["open"] = is_open

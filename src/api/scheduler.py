@@ -241,10 +241,18 @@ async def _scheduled_minute_realtime() -> None:
 
     MINUTE_REALTIME_SYMBOLS 가 설정된 경우 해당 종목만, 미설정 시 전체 활성 종목.
     수집 결과는 DEBUG 레벨로만 기록 (분당 로그 범람 방지).
+
+    MINUTE_KIS 백필 잡이 실행 중이면 이번 tick 을 스킵한다.
+    (백필과 실시간이 동시에 KIS API 를 호출하면 rate limit 이 겹침)
     """
+    from src.api.locks import CollectorName, is_locally_busy
     from src.collectors.minute_kis import collect_latest_bars
     from src.config import get_app_config
     from src.db.repositories import get_active_tickers
+
+    if is_locally_busy(CollectorName.MINUTE_KIS):
+        logger.info("[minute_realtime] skipped — minute_kis backfill is running")
+        return
 
     symbols = _minute_realtime_symbols()
     if symbols is None:
