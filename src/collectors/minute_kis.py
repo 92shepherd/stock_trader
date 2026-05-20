@@ -141,6 +141,11 @@ def _bars_to_df(symbol: str, bars: list[dict[str, Any]]) -> pd.DataFrame:
         .dt.tz_localize("Asia/Seoul")
         .dt.tz_convert("UTC")
     )
+    # None이 섞인 int 컬럼은 pandas가 float64로 승격 → bigint COPY 실패.
+    # Int64(nullable integer)로 명시해 to_csv() 출력에서 소수점을 제거한다.
+    for col in ("volume", "value"):
+        if col in df.columns:
+            df[col] = df[col].astype("Int64")
     return df
 
 
