@@ -13,8 +13,8 @@
     --skip-krx                           # (기본 ON) KRX 의존 엔드포인트 스킵
     --include-krx                        # KRX 포함 (디버그용)
 
-KRX 의존(스킵 대상): /collect/tickers/kr, /collect/daily/fdr, /collect/daily/kis
-                    (KIS daily 도 KR price → 보수적으로 제외)
+KR 시세 수집(스킵 대상): /collect/daily/kis, /collect/minute/kis
+                    (pykrx/FDR 의존 라우트는 삭제됨 — 더 이상 존재하지 않음)
                     /collect/daily-cron 은 only=dart 로 호출하여 KIS 단계 회피.
 """
 from __future__ import annotations
@@ -294,24 +294,20 @@ def main() -> int:
                 expect=(202, 409, 422, 403),
                 note_on_ok="submitted or expected-policy reject")
 
-        # ─── 9) KRX 의존 (스킵 또는 강제 실행) ──────────────────────────
-        print("\n[9] KRX-dependent endpoints")
-        krx_targets = [
-            ("tickers-kr", "/collect/tickers/kr", {}),
-            ("daily-fdr", "/collect/daily/fdr",
-             {"symbols": ["005930"], "days": 3, "skip_done": False}),
+        # ─── 9) KIS daily / minute (KRX 의존성 제거 이후 KR 수집의 유일한 경로) ─
+        print("\n[9] KIS-based KR collectors")
+        kis_targets = [
             ("daily-kis", "/collect/daily/kis",
              {"symbols": ["005930"], "days": 3, "skip_done": False}),
             ("minute-kis", "/collect/minute/kis",
              {"symbols": ["005930"]}),
         ]
         if args.skip_krx:
-            for name, path, _ in krx_targets:
+            for name, path, _ in kis_targets:
                 print(f"   SKIP {path}  (--skip-krx)")
         else:
-            for name, path, body in krx_targets:
-                method = "POST"
-                _do(rep, cx, name, method, path, json_body=body,
+            for name, path, body in kis_targets:
+                _do(rep, cx, name, "POST", path, json_body=body,
                     expect=(200, 202, 409, 422, 500))
 
     print(rep.summary())

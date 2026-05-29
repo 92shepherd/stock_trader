@@ -174,17 +174,6 @@ def _format_error(exc: BaseException) -> str:
 # ----- Tickers (sync, short) -----
 
 
-async def run_tickers_kr(*, desc: bool = True) -> dict[str, Any]:
-    """FDR-based Korean ticker master refresh. ~10-30s."""
-    from src.collectors.tickers import collect_tickers_fdr
-    return await _run_sync_locked(
-        CollectorName.TICKERS_KR,
-        collect_tickers_fdr,
-        ref_date=None,
-        desc=desc,
-    )
-
-
 async def run_tickers_us() -> dict[str, Any]:
     """NASDAQ Trader US ticker master refresh. ~10s."""
     from src.collectors.tickers_us import collect_us_tickers
@@ -213,50 +202,6 @@ async def run_dart_corp_codes(
 
 
 # ----- Daily prices (async, long) -----
-
-
-async def submit_daily_fdr(
-    *,
-    symbols: list[str] | None = None,
-    start_date: date | None = None,
-    end_date: date | None = None,
-    days: int | None = None,
-    markets: list[str] | None = None,
-    skip_done: bool = True,
-) -> JobRecord:
-    """Korean daily prices via FinanceDataReader. Long-running.
-
-    Implementation note:
-        The collector exposes two paths \u2014 `backfill_symbols` (pinned
-        list) and `backfill_active_universe` (everything). We pick
-        based on whether `symbols` was provided, matching the CLI's
-        behavior.
-    """
-    from src.collectors.daily_fdr import (
-        backfill_active_universe,
-        backfill_symbols,
-    )
-
-    params: dict[str, Any] = {
-        "symbols": symbols,
-        "start_date": start_date.isoformat() if start_date else None,
-        "end_date": end_date.isoformat() if end_date else None,
-        "days": days,
-        "markets": markets,
-        "skip_done": skip_done,
-    }
-
-    if symbols:
-        return await _run_async_locked(
-            CollectorName.DAILY_FDR, params, backfill_symbols,
-            symbols=symbols, start_date=start_date, end_date=end_date,
-            days=days, skip_done=skip_done,
-        )
-    return await _run_async_locked(
-        CollectorName.DAILY_FDR, params, backfill_active_universe,
-        start_date=start_date, end_date=end_date, days=days,
-        markets=markets, skip_done=skip_done,
-    )
 
 
 async def submit_daily_kis(
@@ -963,11 +908,9 @@ async def submit_minute_kis(
 
 __all__ = [
     # sync runs
-    "run_tickers_kr",
     "run_tickers_us",
     "run_dart_corp_codes",
     # async runs
-    "submit_daily_fdr",
     "submit_daily_kis",
     "submit_daily_us",
     "submit_dart_disclosures",

@@ -18,7 +18,7 @@ Steps:
         4  = 사전 검증 실패 (.env 누락 등)
         130 = 사용자 중단 (Ctrl-C)
     - 휴장일/주말 처리는 각 collector 내부의 resume 로직(`skip_done=True`)에
-      위임한다. 03:00 KST 시점에는 KRX 데이터가 아직 전일자라 "어제 = 직전
+      위임한다. 03:00 KST 시점에는 시장 데이터가 아직 전일자라 "어제 = 직전
       거래일" 가정이 안전하다.
 
 Usage:
@@ -47,7 +47,7 @@ Usage:
 from __future__ import annotations
 
 # .env는 모든 src.* import보다 먼저 로드되어야 한다
-# (KRX_ID/KRX_PW, DART_API_KEY, KIS_* 등이 모듈 import 시점에 평가될 수 있음)
+# (DART_API_KEY, KIS_* 등이 모듈 import 시점에 평가될 수 있음)
 from pathlib import Path
 
 from dotenv import load_dotenv

@@ -82,7 +82,7 @@ services:
       DB_USER: ${DB_USER:-stock}
       DB_PASSWORD: ${DB_PASSWORD:-changeme}
 
-      # --- KIS / DART / KRX credentials passed through from host .env ---
+      # --- KIS / DART credentials passed through from host .env ---
       # If a variable is unset on the host, `${VAR:-}` resolves to empty
       # so the api won't crash on import \u2014 it'll just complain at the
       # first collector call. That's the same behavior as the bare-metal
@@ -92,8 +92,6 @@ services:
       KIS_ACCOUNT_NO: ${KIS_ACCOUNT_NO:-}
       KIS_ACCOUNT_PRODUCT: ${KIS_ACCOUNT_PRODUCT:-01}
       KIS_MODE: ${KIS_MODE:-paper}
-      KRX_ID: ${KRX_ID:-}
-      KRX_PW: ${KRX_PW:-}
       DART_API_KEY: ${DART_API_KEY:-}
 
       # --- FnGuide consensus scraper (개인용 비공개 한정) ---

@@ -29,12 +29,10 @@ from src.api.auth import require_api_key
 from src.api.locks import CollectorBusy
 from src.api.runners import (
     run_dart_corp_codes,
-    run_tickers_kr,
     run_tickers_us,
     submit_consensus_fnguide,
     submit_consensus_hankyung,
     submit_daily_cron,
-    submit_daily_fdr,
     submit_daily_kis,
     submit_daily_us,
     submit_dart_disclosures,
@@ -46,7 +44,6 @@ from src.api.schemas import (
     ConsensusFnguideRequest,
     ConsensusHankyungRequest,
     DailyCronRequest,
-    DailyFDRRequest,
     DailyKISRequest,
     DailyUSRequest,
     DartCorpCodesRequest,
@@ -56,7 +53,6 @@ from src.api.schemas import (
     JobAcceptedResponse,
     MinuteKISRequest,
     SyncRunResponse,
-    TickersKRRequest,
     TickersUSRequest,
 )
 
@@ -97,19 +93,6 @@ def _busy_409(exc: CollectorBusy) -> HTTPException:
 
 
 @router.post(
-    "/tickers/kr",
-    response_model=SyncRunResponse,
-    summary="Refresh Korean ticker master (FDR)",
-)
-async def trigger_tickers_kr(req: TickersKRRequest) -> SyncRunResponse:
-    try:
-        result = await run_tickers_kr(desc=req.desc)
-    except CollectorBusy as e:
-        raise _busy_409(e) from e
-    return SyncRunResponse(**result)
-
-
-@router.post(
     "/tickers/us",
     response_model=SyncRunResponse,
     summary="Refresh US ticker master (NASDAQ Trader)",
@@ -143,24 +126,6 @@ async def trigger_dart_corp_codes(req: DartCorpCodesRequest) -> SyncRunResponse:
 # ===========================================================================
 # Daily-price collectors \u2014 ASYNCHRONOUS (job_id)
 # ===========================================================================
-
-
-@router.post(
-    "/daily/fdr",
-    response_model=JobAcceptedResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    summary="Korean daily prices via FinanceDataReader (long-running)",
-)
-async def trigger_daily_fdr(req: DailyFDRRequest) -> JobAcceptedResponse:
-    record = await submit_daily_fdr(
-        symbols=req.symbols,
-        start_date=req.start_date,
-        end_date=req.end_date,
-        days=req.days,
-        markets=req.markets,
-        skip_done=req.skip_done,
-    )
-    return _job_accepted(record)
 
 
 @router.post(

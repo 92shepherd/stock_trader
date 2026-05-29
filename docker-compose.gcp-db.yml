@@ -31,14 +31,12 @@ services:
       DB_USER: ${DB_USER:-stock}
       DB_PASSWORD: ${DB_PASSWORD:-changeme}
 
-      # --- KIS / DART / KRX credentials ---
+      # --- KIS / DART credentials ---
       KIS_APP_KEY: ${KIS_APP_KEY:-}
       KIS_APP_SECRET: ${KIS_APP_SECRET:-}
       KIS_ACCOUNT_NO: ${KIS_ACCOUNT_NO:-}
       KIS_ACCOUNT_PRODUCT: ${KIS_ACCOUNT_PRODUCT:-01}
       KIS_MODE: ${KIS_MODE:-paper}
-      KRX_ID: ${KRX_ID:-}
-      KRX_PW: ${KRX_PW:-}
       DART_API_KEY: ${DART_API_KEY:-}
 
       # --- FnGuide consensus scraper ---

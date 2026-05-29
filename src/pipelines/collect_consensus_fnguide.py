@@ -38,7 +38,6 @@ from src.collectors.consensus_fnguide import (
     backfill_active_universe,
     backfill_symbols,
 )
-from src.collectors.tickers import collect_tickers_fdr
 from src.utils.logger import logger
 
 
@@ -64,10 +63,6 @@ def main() -> None:
         help="전 종목 모드에서 대상 시장 (기본: config 설정). 예: KOSPI KOSDAQ",
     )
     parser.add_argument(
-        "--skip-tickers", action="store_true",
-        help="Ticker 마스터 refresh 를 건너뜀 (이미 오늘 돌렸을 때).",
-    )
-    parser.add_argument(
         "--no-skip-done", action="store_true",
         help="이미 success 로 기록된 종목도 재수집.",
     )
@@ -90,15 +85,10 @@ def main() -> None:
         )
         return
 
-    # Step 1: ticker 마스터 refresh
-    if not args.skip_tickers:
-        logger.info("=== Step 1: Refresh ticker master ===")
-        collect_tickers_fdr(desc=True)
-    else:
-        logger.info("=== Step 1: Skipped ticker master refresh ===")
-
-    # Step 2: 전 종목 컨센서스 스냅샷
-    logger.info("=== Step 2: Collect FnGuide consensus snapshots ===")
+    # 전 종목 컨센서스 스냅샷.
+    # NOTE: tickers 마스터 refresh 는 제거됨 (pykrx/FDR 의존성 폐기).
+    #       사전에 tickers 테이블을 최신 상태로 유지해야 한다 (KIS 기반 수집기 사용).
+    logger.info("=== Collect FnGuide consensus snapshots ===")
     backfill_active_universe(
         as_of_date=args.as_of,
         markets=args.markets,

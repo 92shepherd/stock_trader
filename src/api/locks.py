@@ -66,12 +66,10 @@ class CollectorName(str, Enum):
     """
 
     # Master tables
-    TICKERS_KR = "tickers"           # collect_tickers_fdr (FDR)
     TICKERS_US = "tickers_us"        # collect_us_tickers
     DART_CORP_CODES = "dart_corp_codes"
 
     # Daily prices
-    DAILY_FDR = "daily_fdr"
     DAILY_KIS = "daily_kis"
     DAILY_US_YF = "daily_us_yf"
 

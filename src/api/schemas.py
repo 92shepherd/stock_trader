@@ -60,18 +60,6 @@ class JobListResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class TickersKRRequest(BaseModel):
-    """POST /collect/tickers/kr"""
-
-    desc: bool = Field(
-        True,
-        description=(
-            "If true (default), use FDR's '-DESC' listing variant to also "
-            "populate sector/industry/listing_date. Slightly slower."
-        ),
-    )
-
-
 class TickersUSRequest(BaseModel):
     """POST /collect/tickers/us \u2014 no body needed; placeholder for symmetry."""
 
@@ -124,30 +112,6 @@ class _DateRangeMixin(BaseModel):
         if v is not None and start is not None and v < start:
             raise ValueError("end_date must be on or after start_date")
         return v
-
-
-class DailyFDRRequest(_DateRangeMixin):
-    """POST /collect/daily/fdr"""
-
-    symbols: list[str] | None = Field(
-        None,
-        description=(
-            "Pinned 6-digit Korean symbols. None = full active universe "
-            "from the `tickers` table."
-        ),
-    )
-    markets: list[str] | None = Field(
-        None,
-        description="e.g. ['KOSPI', 'KOSDAQ']. None = from settings.yaml.",
-    )
-    skip_done: bool = True
-
-    @field_validator("symbols")
-    @classmethod
-    def _zero_pad(cls, v: list[str] | None) -> list[str] | None:
-        if v is None:
-            return None
-        return [s.strip().zfill(6) for s in v if s and s.strip()]
 
 
 class DailyKISRequest(_DateRangeMixin):
@@ -546,10 +510,8 @@ __all__ = [
     "JobStatusResponse",
     "JobListResponse",
     # requests
-    "TickersKRRequest",
     "TickersUSRequest",
     "DartCorpCodesRequest",
-    "DailyFDRRequest",
     "DailyKISRequest",
     "DailyUSRequest",
     "DartDisclosuresRequest",
