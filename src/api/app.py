@@ -39,7 +39,6 @@ import asyncio  # noqa: E402
 import psycopg  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 
-from src.api.routers import bots as bots_router  # noqa: E402
 from src.api.routers import collect as collect_router  # noqa: E402
 from src.api.routers import health as health_router  # noqa: E402
 from src.api.routers import jobs as jobs_router  # noqa: E402
@@ -157,7 +156,6 @@ def create_app() -> FastAPI:
     app.include_router(schedule_router.router)
     app.include_router(collect_router.router)
     app.include_router(research_router.router)
-    app.include_router(bots_router.router)
     return app
 
 
