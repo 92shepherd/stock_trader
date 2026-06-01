@@ -20,11 +20,14 @@ from src.api.runners import (
     submit_factor_eval,
     submit_factor_eval_all,
     submit_minute_forecast,
+    submit_minute_forecast_all,
 )
 from src.api.schemas import (
     FactorEvalAllRequest,
     FactorEvalRequest,
     JobAcceptedResponse,
+    MinuteForecastAllRequest,
+    MinuteForecastAllResponse,
     MinuteForecastRequest,
     MinuteForecastResponse,
 )
@@ -135,6 +138,42 @@ async def trigger_factor_eval(req: FactorEvalRequest) -> JobAcceptedResponse:
 # ---------------------------------------------------------------------------
 # Minute-bar price forecast
 # ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/minute-forecast/all",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=MinuteForecastAllResponse,
+    summary="전체(또는 지정) 종목 분봉 예측 일괄 (비동기)",
+)
+async def trigger_minute_forecast_all(
+    req: MinuteForecastAllRequest,
+) -> MinuteForecastAllResponse:
+    """전체(또는 지정) 종목의 당일/익일 분봉 예측을 비동기로 시작.
+
+    - symbols 미지정 시 KOSPI+KOSDAQ 전체 활성 종목 (~2,600개) 대상
+    - symbols 지정 시 해당 종목만 대상
+    - markets 로 시장 필터링 가능 (symbols=None 일 때만 적용)
+    - 진행 상황은 `GET /jobs/{job_id}` 로 확인
+    - 실행 중 이 엔드포인트 또는 `POST /research/minute-forecast` 재호출 시 409
+    """
+    try:
+        record = await submit_minute_forecast_all(
+            symbols=req.symbols,
+            markets=req.markets,
+            save_feature_snapshot=req.save_feature_snapshot,
+        )
+    except CollectorBusy as e:
+        raise _busy_409(e) from e
+
+    n_symbols = record.params.get("n_symbols", 0)
+    return MinuteForecastAllResponse(
+        job_id=record.id,
+        collector=record.collector.value,
+        status=record.status.value,
+        submitted_at=record.submitted_at.isoformat(),
+        n_symbols=n_symbols,
+    )
 
 
 @router.post(

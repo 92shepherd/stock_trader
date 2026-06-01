@@ -469,17 +469,7 @@ class DailyCronRequest(BaseModel):
 
 
 class MinuteForecastRequest(BaseModel):
-    """POST /research/minute-forecast — 종목 분봉 가격 예측.
-
-    실행 규칙:
-        - 08:00 KST 이전 호출 → 당일 장 운영 시간 (09:00~15:30) 390분봉 예측
-        - 08:00 KST 이후 호출 → 다음 영업일 390분봉 예측
-        - 이미 같은 (symbol, ts)가 존재하면 upsert
-
-    요청 예시:
-        {"symbol": "005930"}
-        {"symbol": "005930", "save_feature_snapshot": true}
-    """
+    """POST /research/minute-forecast — 종목 분봉 가격 예측."""
 
     symbol: str = Field(
         ...,
@@ -499,6 +489,51 @@ class MinuteForecastRequest(BaseModel):
     @classmethod
     def _zero_pad(cls, v: str) -> str:
         return v.strip().zfill(6)
+
+
+class MinuteForecastAllRequest(BaseModel):
+    """POST /research/minute-forecast/all — 전체(또는 지정) 종목 분봉 예측 일괄.
+
+    symbols 를 지정하지 않으면 KOSPI+KOSDAQ 전체 활성 종목 대상.
+    소요 시간: 종목 수에 비례 (2,600개 기준 1시간 이상 가능).
+    진행 상황은 `GET /jobs/{job_id}` 로 확인.
+    """
+
+    symbols: list[str] | None = Field(
+        None,
+        description=(
+            "6자리 KRX 종목코드 목록. "
+            "None 이면 KOSPI+KOSDAQ 전체 활성 종목 대상."
+        ),
+    )
+    markets: list[str] | None = Field(
+        None,
+        description=(
+            "symbols=None 일 때 대상 시장. 예: ['KOSPI'], ['KOSPI', 'KOSDAQ']. "
+            "None 이면 KOSPI+KOSDAQ 전체."
+        ),
+    )
+    save_feature_snapshot: bool = Field(
+        False,
+        description="True 이면 피처 스냅샷 JSONB 저장. 용량 우려로 False 권장.",
+    )
+
+    @field_validator("symbols")
+    @classmethod
+    def _zero_pad(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        return [s.strip().zfill(6) for s in v if s.strip()]
+
+
+class MinuteForecastAllResponse(BaseModel):
+    """POST /research/minute-forecast/all 응답 (비동기 잡 제출)."""
+
+    job_id: str
+    collector: str
+    status: str
+    submitted_at: str
+    n_symbols: int = Field(..., description="예측 대상 종목 수.")
 
 
 class MinuteForecastResponse(BaseModel):

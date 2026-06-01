@@ -911,15 +911,7 @@ async def submit_minute_forecast(
     symbol: str,
     save_feature_snapshot: bool = False,
 ) -> JobRecord:
-    """1분봉 가격 예측을 비동기 잡으로 제출.
-
-    08:00 KST 기준으로 당일/익일 목표날짜를 자동 결정하고
-    LightGBM per-symbol 모델로 390분봉을 예측하여 DB upsert.
-
-    Args:
-        symbol: 6자리 KRX 종목코드.
-        save_feature_snapshot: 피처 스냅샷 JSONB 저장 여부.
-    """
+    """1분봉 가격 예측을 비동기 잡으로 제출."""
     from src.research.minute_forecast import run_minute_forecast
 
     params: dict[str, Any] = {
@@ -929,6 +921,72 @@ async def submit_minute_forecast(
     return await _run_async_locked(
         CollectorName.MINUTE_FORECAST, params, run_minute_forecast,
         symbol=symbol,
+        save_feature_snapshot=save_feature_snapshot,
+    )
+
+
+def _minute_forecast_all_blocking(
+    *,
+    symbols: list[str],
+    save_feature_snapshot: bool,
+) -> dict[str, Any]:
+    """MINUTE_FORECAST 락 하나를 유지하면서 종목별 순차 예측 실행 (블로킹).
+
+    _run_async_locked 가 이 함수를 asyncio.to_thread 로 돌리므로
+    실제로는 별도 스레드에서 실행됨.
+    """
+    from src.research.minute_forecast import run_minute_forecast
+
+    ok: list[str] = []
+    failed: dict[str, str] = {}
+
+    for symbol in symbols:
+        try:
+            run_minute_forecast(
+                symbol,
+                save_feature_snapshot=save_feature_snapshot,
+            )
+            ok.append(symbol)
+        except Exception as e:  # noqa: BLE001
+            failed[symbol] = str(e)[:200]
+            logger.warning(f"[minute_forecast_all] {symbol} 실패: {e}")
+
+    return {
+        "total": len(symbols),
+        "n_ok": len(ok),
+        "n_failed": len(failed),
+        "ok": ok,
+        "failed": failed,
+    }
+
+
+async def submit_minute_forecast_all(
+    *,
+    symbols: list[str] | None = None,
+    markets: list[str] | None = None,
+    save_feature_snapshot: bool = False,
+) -> JobRecord:
+    """KOSPI+KOSDAQ 전체(또는 지정) 종목 분봉 예측을 비동기 잡으로 제출.
+
+    symbols=None 이면 markets (None 시 ['KOSPI','KOSDAQ']) 전체 활성 종목 대상.
+    MINUTE_FORECAST 락 하나를 전체 진행에 대해 유지하므로
+    실행 중 수동 API 호출은 409를 반환함.
+    """
+    from src.db.repositories import get_active_tickers
+
+    if symbols is None:
+        effective_markets = markets or ["KOSPI", "KOSDAQ"]
+        tickers = get_active_tickers(markets=effective_markets)
+        symbols = [t.symbol for t in tickers]
+
+    params: dict[str, Any] = {
+        "symbols": symbols,
+        "n_symbols": len(symbols),
+        "save_feature_snapshot": save_feature_snapshot,
+    }
+    return await _run_async_locked(
+        CollectorName.MINUTE_FORECAST, params, _minute_forecast_all_blocking,
+        symbols=symbols,
         save_feature_snapshot=save_feature_snapshot,
     )
 
@@ -951,4 +1009,5 @@ __all__ = [
     "submit_factor_eval",
     "submit_factor_eval_all",
     "submit_minute_forecast",
+    "submit_minute_forecast_all",
 ]
