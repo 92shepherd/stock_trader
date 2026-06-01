@@ -44,6 +44,7 @@ from src.api.runners import (
     submit_consensus_hankyung,
     submit_daily_cron,
     submit_factor_eval_all,
+    submit_minute_forecast,
 )
 from src.utils.logger import logger
 
@@ -53,6 +54,7 @@ JOB_ID_DAILY_CRON = "daily_kis_dart_cron"
 JOB_ID_HANKYUNG_CRON = "daily_hankyung_cron"
 JOB_ID_FACTOR_EVAL_CRON = "weekly_factor_eval_cron"
 JOB_ID_MINUTE_REALTIME = "minute_realtime_cron"
+JOB_ID_MINUTE_FORECAST_CRON = "daily_minute_forecast_cron"
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +130,35 @@ def _minute_realtime_symbols() -> list[str] | None:
     예: MINUTE_REALTIME_SYMBOLS=005930,000660,035720
     """
     raw = os.getenv("MINUTE_REALTIME_SYMBOLS", "").strip()
+    if not raw:
+        return None
+    return [s.strip().zfill(6) for s in raw.split(",") if s.strip()]
+
+
+def _minute_forecast_enabled() -> bool:
+    """MINUTE_FORECAST_ENABLED 환경변수. 기본 True.
+
+    매일 18:00 KST 에 전체 활성 종목의 익일 분봉 예측을 생성하는 잡.
+    .env 에 MINUTE_FORECAST_ENABLED=false 를 설정하면 비활성화됨.
+    """
+    return _env_bool("MINUTE_FORECAST_ENABLED", True)
+
+
+def _minute_forecast_cron_expression() -> str:
+    """SCHEDULER_MINUTE_FORECAST_CRON 환경변수. 기본: 매일 18:00 KST."""
+    return (
+        os.getenv("SCHEDULER_MINUTE_FORECAST_CRON", "0 18 * * 1-5").strip()
+        or "0 18 * * 1-5"
+    )
+
+
+def _minute_forecast_symbols() -> list[str] | None:
+    """MINUTE_FORECAST_SYMBOLS: 쉼표 구분 종목코드 목록.
+
+    빈값이면 None → 전체 활성 종목 대상으로 예측.
+    예: MINUTE_FORECAST_SYMBOLS=005930,000660
+    """
+    raw = os.getenv("MINUTE_FORECAST_SYMBOLS", "").strip()
     if not raw:
         return None
     return [s.strip().zfill(6) for s in raw.split(",") if s.strip()]
@@ -230,6 +261,87 @@ async def _scheduled_hankyung_cron() -> None:
         )
     except Exception as e:  # noqa: BLE001
         logger.exception(f"[scheduler] hankyung cron submission failed: {e}")
+
+
+async def _scheduled_minute_forecast_cron() -> None:
+    """18:00 KST 스케줄 잡 — 익일 전체 종목 분봉 예측 생성.
+
+    MINUTE_FORECAST_ENABLED=true (기본) 일 때만 register_default_jobs()에서 등록됨.
+
+    18:00 KST 는 08:00 이후이므로 minute_forecast.py 의 _resolve_target_date()에 의해
+    자동으로 다음 영업일(target_date)로 결정됨.
+
+    동작 흐름:
+        1. 전체 활성 종목 목록 조회 (MINUTE_FORECAST_SYMBOLS 설정 시 해당 종목만)
+        2. 종목별로 submit_minute_forecast() 제엄 (MINUTE_FORECAST 락 공유)
+        3. 각 잡의 완료를 기다린 후 다음 종목 정리
+        4. 전체 완료 요약 로깅
+
+    주의사항:
+        - 종목 수가 많으면 (일반적으로 ~2,600개) 완료까지 1시간 이상 소요 가능.
+        - MINUTE_FORECAST 락은 각 종목 단위로 release/reacquire하지 않고
+          전체 잡에 대해 하나를 유지하므로 수동 API 호출이 409가 당합니다.
+        - 종목 하나의 실패는 다음 종목 실행에 영향을 주지 않습니다.
+    """
+    from src.api.locks import CollectorName, collector_lock
+    from src.db.repositories import get_active_tickers
+    from src.research.minute_forecast import run_minute_forecast
+
+    # 1. 대상 종목 목록 결정
+    symbols = _minute_forecast_symbols()
+    if symbols is None:
+        tickers = await asyncio.to_thread(
+            get_active_tickers,
+            ["KOSPI", "KOSDAQ"],
+        )
+        symbols = [t.symbol for t in tickers]
+
+    if not symbols:
+        logger.warning("[minute_forecast_cron] 대상 종목 없음 — 잡 스킵")
+        return
+
+    logger.info(
+        f"[minute_forecast_cron] 시작: {len(symbols)}개 종목 익일 분봉 예측"
+    )
+
+    ok: list[str] = []
+    failed: dict[str, str] = {}
+
+    # 2. MINUTE_FORECAST 락 하나를 전체 진행에 대해 유지
+    #    (API 수동 호출과 충돌 방지)
+    try:
+        async with collector_lock(CollectorName.MINUTE_FORECAST):
+            for symbol in symbols:
+                try:
+                    result = await asyncio.to_thread(
+                        run_minute_forecast,
+                        symbol,
+                        save_feature_snapshot=False,
+                    )
+                    ok.append(symbol)
+                    logger.debug(
+                        f"[minute_forecast_cron] {symbol}: "
+                        f"{result['n_rows']} rows, "
+                        f"target={result['target_date']}"
+                    )
+                except Exception as sym_err:  # noqa: BLE001
+                    failed[symbol] = str(sym_err)[:200]
+                    logger.warning(
+                        f"[minute_forecast_cron] {symbol} 실패: {sym_err}"
+                    )
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"[minute_forecast_cron] 락 획득 실패: {e}")
+        return
+
+    logger.success(
+        f"[minute_forecast_cron] 완료 — "
+        f"ok={len(ok)}, failed={len(failed)}/{len(symbols)}"
+    )
+    if failed:
+        logger.warning(
+            f"[minute_forecast_cron] 실패 종목 예시: "
+            f"{list(failed.items())[:5]}"
+        )
 
 
 async def _scheduled_minute_realtime() -> None:
@@ -393,6 +505,38 @@ def register_default_jobs(scheduler: AsyncIOScheduler) -> list[dict[str, Any]]:
             "(MINUTE_REALTIME_ENABLED is not set to true)"
         )
 
+    # --- 분봉 예측 일 스케줄 ---
+    if _minute_forecast_enabled():
+        forecast_cron_expr = _minute_forecast_cron_expression()
+        forecast_trigger = CronTrigger.from_crontab(
+            forecast_cron_expr, timezone=_timezone_name()
+        )
+        forecast_symbols = _minute_forecast_symbols()
+        symbol_desc = (
+            f"{len(forecast_symbols)}개 종목"
+            if forecast_symbols
+            else "전체 활성 종목"
+        )
+        scheduler.add_job(
+            _scheduled_minute_forecast_cron,
+            trigger=forecast_trigger,
+            id=JOB_ID_MINUTE_FORECAST_CRON,
+            name=f"분봉 예측 일 일괄 ({symbol_desc}, 18:00 KST)",
+            replace_existing=True,
+        )
+        registered.append(
+            {"id": JOB_ID_MINUTE_FORECAST_CRON, "cron": forecast_cron_expr}
+        )
+        logger.info(
+            f"[scheduler] minute forecast cron registered — {symbol_desc} "
+            f"cron={forecast_cron_expr!r}"
+        )
+    else:
+        logger.info(
+            "[scheduler] minute forecast cron not registered "
+            "(MINUTE_FORECAST_ENABLED=false)"
+        )
+
     return registered
 
 
@@ -443,6 +587,7 @@ __all__ = [
     "JOB_ID_HANKYUNG_CRON",
     "JOB_ID_FACTOR_EVAL_CRON",
     "JOB_ID_MINUTE_REALTIME",
+    "JOB_ID_MINUTE_FORECAST_CRON",
     "build_scheduler",
     "register_default_jobs",
     "start_scheduler",

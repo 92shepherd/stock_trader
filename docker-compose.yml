@@ -126,6 +126,15 @@ services:
       MINUTE_REALTIME_ENABLED: ${MINUTE_REALTIME_ENABLED:-false}
       MINUTE_REALTIME_SYMBOLS: ${MINUTE_REALTIME_SYMBOLS:-}
 
+      # --- 분봉 가격 예측 일 스케줄 (기본 활성화) ---
+      # 매일 18:00 KST (평일) 에 전체 활성 종목의 익일 분봉 예측을 생성.
+      # .env 에 MINUTE_FORECAST_ENABLED=false 를 설정하면 비활성화.
+      # MINUTE_FORECAST_SYMBOLS=005930,000660 으로 특정 종목만 지정 가능 (기본=전체).
+      # SCHEDULER_MINUTE_FORECAST_CRON 으로 실행 시각 변경 가능 (기본: '0 18 * * 1-5').
+      MINUTE_FORECAST_ENABLED: ${MINUTE_FORECAST_ENABLED:-true}
+      MINUTE_FORECAST_SYMBOLS: ${MINUTE_FORECAST_SYMBOLS:-}
+      SCHEDULER_MINUTE_FORECAST_CRON: ${SCHEDULER_MINUTE_FORECAST_CRON:-0 18 * * 1-5}
+
       # --- Logging ---
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_DIR: /app/data/logs
