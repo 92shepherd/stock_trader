@@ -468,6 +468,50 @@ class DailyCronRequest(BaseModel):
     skip_done: bool = True
 
 
+class MinuteForecastRequest(BaseModel):
+    """POST /research/minute-forecast — 종목 분봉 가격 예측.
+
+    실행 규칙:
+        - 08:00 KST 이전 호출 → 당일 장 운영 시간 (09:00~15:30) 390분봉 예측
+        - 08:00 KST 이후 호출 → 다음 영업일 390분봉 예측
+        - 이미 같은 (symbol, ts)가 존재하면 upsert
+
+    요청 예시:
+        {"symbol": "005930"}
+        {"symbol": "005930", "save_feature_snapshot": true}
+    """
+
+    symbol: str = Field(
+        ...,
+        min_length=6,
+        max_length=6,
+        description="6자리 KRX 종목코드. 예: '005930' (삼성전자).",
+    )
+    save_feature_snapshot: bool = Field(
+        False,
+        description=(
+            "True 이면 예측에 사용된 피처 값을 feature_snapshot(JSONB)에 저장. "
+            "운영 환경에서는 용량 절약을 위해 False 당.  "
+        ),
+    )
+
+    @field_validator("symbol")
+    @classmethod
+    def _zero_pad(cls, v: str) -> str:
+        return v.strip().zfill(6)
+
+
+class MinuteForecastResponse(BaseModel):
+    """POST /research/minute-forecast 동기 실행 응답."""
+
+    symbol: str
+    target_date: str = Field(..., description="YYYY-MM-DD 형식 예측 대상 날짜.")
+    n_rows: int = Field(..., description="DB에 upsert된 분봉 수 (정상: 390).")
+    prev_close: float = Field(..., description="역변환 기준이 된 전일 종가.")
+    model_version: str
+    train_rows: int = Field(..., description="학습에 사용된 분봉 행 수.")
+
+
 # ---------------------------------------------------------------------------
 # Scheduler management
 # ---------------------------------------------------------------------------

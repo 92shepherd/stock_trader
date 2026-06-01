@@ -96,6 +96,9 @@ class CollectorName(str, Enum):
     # Minute prices — KIS 분봉 수집
     MINUTE_KIS = "minute_kis"
 
+    # Minute-bar price forecast (per-symbol LightGBM)
+    MINUTE_FORECAST = "minute_forecast"
+
 
 # Magic prefix for the advisory-lock key high half: ASCII "ST\\0\\0".
 # Keeps our keys in a recognizable, project-scoped namespace inside the

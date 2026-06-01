@@ -906,6 +906,33 @@ async def submit_minute_kis(
     )
 
 
+async def submit_minute_forecast(
+    *,
+    symbol: str,
+    save_feature_snapshot: bool = False,
+) -> JobRecord:
+    """1분봉 가격 예측을 비동기 잡으로 제출.
+
+    08:00 KST 기준으로 당일/익일 목표날짜를 자동 결정하고
+    LightGBM per-symbol 모델로 390분봉을 예측하여 DB upsert.
+
+    Args:
+        symbol: 6자리 KRX 종목코드.
+        save_feature_snapshot: 피처 스냅샷 JSONB 저장 여부.
+    """
+    from src.research.minute_forecast import run_minute_forecast
+
+    params: dict[str, Any] = {
+        "symbol": symbol,
+        "save_feature_snapshot": save_feature_snapshot,
+    }
+    return await _run_async_locked(
+        CollectorName.MINUTE_FORECAST, params, run_minute_forecast,
+        symbol=symbol,
+        save_feature_snapshot=save_feature_snapshot,
+    )
+
+
 __all__ = [
     # sync runs
     "run_tickers_us",
@@ -923,4 +950,5 @@ __all__ = [
     # research
     "submit_factor_eval",
     "submit_factor_eval_all",
+    "submit_minute_forecast",
 ]

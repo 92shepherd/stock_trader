@@ -26,6 +26,18 @@ from sqlalchemy import text
 
 from src.db.connection import session_scope
 
+# corp_cls 변환 (tickers.corp_cls 도메인: Y=KOSPI, K=KOSDAQ, N=KONEX, E=기타)
+_MARKET_TO_CORP_CLS: dict[str, str] = {
+    "KOSPI": "Y",
+    "KOSDAQ": "K",
+    "KONEX": "N",
+    "기타": "E",
+}
+
+
+def _to_corp_cls(markets: list[str]) -> list[str]:
+    return [_MARKET_TO_CORP_CLS.get(m, m) for m in markets]
+
 
 # -------------------- Latest trading date --------------------
 
@@ -61,8 +73,7 @@ def search_tickers(
         limit: Max rows returned. Hard-capped at 100 to protect context.
 
     Returns:
-        List of dicts with keys: symbol, name, market, sector, industry,
-        listing_date, delisted.
+        List of dicts with keys: symbol, name, corp_cls, induty_code, delisted.
     """
     keyword = (keyword or "").strip()
     if not keyword:
@@ -71,22 +82,20 @@ def search_tickers(
     limit = max(1, min(int(limit), 100))
 
     where = ["(symbol ILIKE :kw OR name ILIKE :kw "
-             "OR COALESCE(sector,'') ILIKE :kw "
-             "OR COALESCE(industry,'') ILIKE :kw)"]
+             "OR COALESCE(induty_code,'') ILIKE :kw)"]
     params: dict = {"kw": f"%{keyword}%"}
 
     if not include_delisted:
         where.append("delisted = FALSE")
     if markets:
-        where.append("market = ANY(:markets)")
-        params["markets"] = list(markets)
+        where.append("corp_cls = ANY(:corp_cls_values)")
+        params["corp_cls_values"] = _to_corp_cls(markets)
 
     sql = text(
-        "SELECT symbol, name, market, sector, industry, "
-        "       listing_date, delisted "
+        "SELECT symbol, name, corp_cls, induty_code, delisted "
         "  FROM tickers "
         f" WHERE {' AND '.join(where)} "
-        " ORDER BY (symbol = :exact) DESC, "  # exact-symbol hit first
+        " ORDER BY (symbol = :exact) DESC, "
         "          (name = :exact)   DESC, "
         "          symbol "
         " LIMIT :limit"
@@ -108,7 +117,7 @@ def get_latest_price(symbol: str) -> dict | None:
     snapshot — uses an index-friendly ORDER BY date DESC LIMIT 1.
     """
     sql = text(
-        "SELECT symbol, name, market, sector, industry, date, "
+        "SELECT symbol, name, corp_cls, induty_code, date, "
         "       open, high, low, close, volume, value, "
         "       market_cap, shares, foreign_net, institution_net, "
         "       individual_net, per, pbr, dividend_yield "
@@ -185,15 +194,15 @@ def _rank_query(
     where = ["date = :on_date"]
     params: dict = {"on_date": on_date}
     if markets:
-        where.append("market = ANY(:markets)")
-        params["markets"] = list(markets)
+        where.append("corp_cls = ANY(:corp_cls_values)")
+        params["corp_cls_values"] = _to_corp_cls(markets)
     if extra_where:
         where.append(extra_where)
     direction = "DESC" if descending else "ASC"
     params["limit"] = max(1, min(int(limit), 100))
 
     sql = text(
-        f"SELECT symbol, name, market, sector, "
+        f"SELECT symbol, name, corp_cls, induty_code, "
         f"       open, high, low, close, volume, value, market_cap, "
         f"       per, pbr, dividend_yield, "
         f"       foreign_net, institution_net, individual_net, "
@@ -336,12 +345,12 @@ def get_financial_snapshot(symbol: str, on_date: date | None = None) -> dict | N
         on_date: As-of date. None = latest available row for that symbol.
 
     Returns:
-        Dict with symbol, name, market, sector, industry, date, close,
+        Dict with symbol, name, corp_cls, induty_code, date, close,
         market_cap, shares, per, pbr, dividend_yield. None if not found.
     """
     if on_date is None:
         sql = text(
-            "SELECT symbol, name, market, sector, industry, date, close, "
+            "SELECT symbol, name, corp_cls, induty_code, date, close, "
             "       market_cap, shares, per, pbr, dividend_yield "
             "  FROM v_daily_prices "
             " WHERE symbol = :sym "
@@ -350,7 +359,7 @@ def get_financial_snapshot(symbol: str, on_date: date | None = None) -> dict | N
         params = {"sym": symbol}
     else:
         sql = text(
-            "SELECT symbol, name, market, sector, industry, date, close, "
+            "SELECT symbol, name, corp_cls, induty_code, date, close, "
             "       market_cap, shares, per, pbr, dividend_yield "
             "  FROM v_daily_prices "
             " WHERE symbol = :sym AND date = :d"
@@ -401,12 +410,12 @@ def screen_by_valuation(
         where.append("market_cap IS NOT NULL AND market_cap >= :mc_min")
         params["mc_min"] = market_cap_min
     if markets:
-        where.append("market = ANY(:markets)")
-        params["markets"] = list(markets)
+        where.append("corp_cls = ANY(:corp_cls_values)")
+        params["corp_cls_values"] = _to_corp_cls(markets)
 
     params["limit"] = max(1, min(int(limit), 200))
     sql = text(
-        "SELECT symbol, name, market, sector, industry, "
+        "SELECT symbol, name, corp_cls, induty_code, "
         "       close, market_cap, per, pbr, dividend_yield "
         "  FROM v_daily_prices "
         f" WHERE {' AND '.join(where)} "

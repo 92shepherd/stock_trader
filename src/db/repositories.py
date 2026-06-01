@@ -37,11 +37,22 @@ from src.utils.logger import logger
 
 # -------------------- Tickers --------------------
 
+# tickers.corp_cls 도메인: Y=KOSPI, K=KOSDAQ, N=KONEX, E=기타.
+# 설정 파일/호출자는 여전히 "KOSPI"/"KOSDAQ" 스타일 이름을 쓰므로 여기서 변환.
+_MARKET_TO_CORP_CLS: dict[str, str] = {
+    "KOSPI": "Y",
+    "KOSDAQ": "K",
+    "KONEX": "N",
+    "기타": "E",
+}
+
+
 def get_active_tickers(markets: list[str] | None = None) -> list[Ticker]:
     with session_scope() as session:
         stmt = select(Ticker).where(Ticker.delisted.is_(False))
         if markets:
-            stmt = stmt.where(Ticker.market.in_(markets))
+            corp_cls_values = [_MARKET_TO_CORP_CLS.get(m, m) for m in markets]
+            stmt = stmt.where(Ticker.corp_cls.in_(corp_cls_values))
         stmt = stmt.order_by(Ticker.symbol)
         return list(session.execute(stmt).scalars().all())
 
@@ -177,6 +188,7 @@ def query_daily_with_names(
         start: inclusive lower bound on date. None = no lower bound.
         end: inclusive upper bound on date. None = no upper bound.
         markets: filter to these markets (e.g. ["KOSPI"]). None = all.
+            "KOSPI"/"KOSDAQ" 형식 또는 corp_cls 값("Y"/"K") 모두 허용.
         limit: optional LIMIT. Results are ordered by (date DESC, symbol).
 
     Example:
@@ -184,7 +196,7 @@ def query_daily_with_names(
             symbols=["005930", "000660"],
             start=date(2025, 1, 1),
         )
-        # df.columns: symbol, name, market, sector, industry, date, open, ...
+        # df.columns: symbol, name, corp_cls, induty_code, date, open, ...
     """
     where = []
     params: dict = {}
@@ -198,8 +210,9 @@ def query_daily_with_names(
         where.append("date <= :end")
         params["end"] = end
     if markets:
-        where.append("market = ANY(:markets)")
-        params["markets"] = list(markets)
+        corp_cls_values = [_MARKET_TO_CORP_CLS.get(m, m) for m in markets]
+        where.append("corp_cls = ANY(:corp_cls_values)")
+        params["corp_cls_values"] = corp_cls_values
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
     limit_sql = f"LIMIT {int(limit)}" if limit else ""
@@ -1331,6 +1344,100 @@ def insert_feature_importance(
     with session_scope() as session:
         session.add_all(rows)
     return len(rows)
+
+
+# -------------------- 분봉 가격 예측 --------------------
+
+MINUTE_PRED_COLUMNS = [
+    "symbol", "ts",
+    "predicted_return", "predicted_close", "prev_close",
+    "model_version", "feature_snapshot",
+]
+_MINUTE_PRED_PK = ("symbol", "ts")
+
+
+def upsert_minute_price_predictions(df: pd.DataFrame) -> int:
+    """Bulk upsert minute_price_predictions via COPY + ON CONFLICT.
+
+    feature_snapshot (JSONB) 컬럼은 psycopg COPY 경로가 아닌 JSON 문자열로
+    변환한 뒤 COPY 에 포함한다. NULL 이면 '\\N' 처리.
+
+    Args:
+        df: 컬럼이 MINUTE_PRED_COLUMNS 의 subset 인 DataFrame.
+            ts 는 KST timezone-aware datetime 이어야 함.
+    Returns:
+        upsert 된 행 수.
+    """
+    if df.empty:
+        return 0
+
+    import json as _json
+
+    df = df.copy()
+    for col in MINUTE_PRED_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[MINUTE_PRED_COLUMNS].copy()
+
+    # feature_snapshot JSONB → 문자열 직렬화 (COPY NULL='\N' 처리)
+    if "feature_snapshot" in df.columns:
+        df["feature_snapshot"] = df["feature_snapshot"].apply(
+            lambda v: _json.dumps(v, ensure_ascii=False) if v is not None else None
+        )
+
+    buf = StringIO()
+    df.to_csv(buf, index=False, header=False, sep="\t", na_rep="\\N")
+    buf.seek(0)
+
+    col_list = ", ".join(MINUTE_PRED_COLUMNS)
+    update_cols = [c for c in MINUTE_PRED_COLUMNS if c not in _MINUTE_PRED_PK]
+    update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+    update_clause += ", updated_at = NOW()"
+
+    with raw_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TEMP TABLE tmp_mpp "
+                "(LIKE minute_price_predictions INCLUDING DEFAULTS) "
+                "ON COMMIT DROP"
+            )
+            with cur.copy(
+                f"COPY tmp_mpp ({col_list}) FROM STDIN "
+                f"WITH (FORMAT CSV, DELIMITER E'\\t', NULL '\\N')"
+            ) as copy:
+                copy.write(buf.read())
+            cur.execute(
+                f"INSERT INTO minute_price_predictions ({col_list}) "
+                f"SELECT {col_list} FROM tmp_mpp "
+                f"ON CONFLICT (symbol, ts) DO UPDATE SET {update_clause}"
+            )
+            affected = cur.rowcount
+    return affected
+
+
+def query_minute_price_predictions(
+    symbol: str,
+    ts_start: "datetime",
+    ts_end: "datetime",
+) -> pd.DataFrame:
+    """특정 종목의 (ts_start, ts_end] 예측 분봉 조회.
+
+    Returns:
+        DataFrame [symbol, ts, predicted_return, predicted_close,
+        prev_close, model_version], ts 오름차순 정렬.
+    """
+    sql = text(
+        "SELECT symbol, ts, predicted_return, predicted_close, "
+        "prev_close, model_version "
+        "FROM minute_price_predictions "
+        "WHERE symbol = :sym AND ts >= :s AND ts <= :e "
+        "ORDER BY ts"
+    )
+    with get_engine().connect() as conn:
+        return pd.read_sql(
+            sql, conn,
+            params={"sym": symbol, "s": ts_start, "e": ts_end},
+        )
 
 
 def query_model_predictions(

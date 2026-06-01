@@ -30,14 +30,34 @@ class Base(DeclarativeBase):
 
 
 class Ticker(Base):
+    """KR 상장 종목 마스터. DART /api/company.json 기반.
+
+    스키마 변경 이력:
+        2026-05: pykrx/FDR 의존성 폐기. market/sector/industry/listing_date 컬럼
+                 제거. DART corp_code/corp_cls/induty_code/est_dt/acc_mt 추가.
+                 (migrations/018_tickers_dart_refactor.sql)
+
+    갱신 정책:
+        티커는 quasi-static. IPO / 상장폐지 / 종목명변경 시에만 갱신.
+        `src.collectors.tickers_kr.refresh_tickers_from_dart()` 사용.
+
+    파생 필드 처리:
+        sector       — induty_code 의 첫 2자리 → KSIC 대분류 매핑.
+                       `src.utils.ksic.induty_code_to_sector()` 사용.
+        market_name  — corp_cls 1자리 → KOSPI/KOSDAQ/KONEX/기타.
+                       Y='KOSPI', K='KOSDAQ', N='KONEX', E='기타'.
+        listing_date — 본 테이블에 저장하지 않음. 필요 시
+                       `SELECT MIN(date) FROM daily_prices WHERE symbol = X`.
+    """
     __tablename__ = "tickers"
 
     symbol: Mapped[str] = mapped_column(String(10), primary_key=True)
     name: Mapped[str] = mapped_column(String(100))
-    market: Mapped[str] = mapped_column(String(10))
-    sector: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    industry: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    listing_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    corp_code: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    corp_cls: Mapped[str | None] = mapped_column(String(1), nullable=True)
+    induty_code: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    est_dt: Mapped[date | None] = mapped_column(Date, nullable=True)
+    acc_mt: Mapped[str | None] = mapped_column(String(2), nullable=True)
     delisted: Mapped[bool] = mapped_column(Boolean, default=False)
     delisted_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -48,7 +68,7 @@ class Ticker(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<Ticker {self.symbol} {self.name} ({self.market})>"
+        return f"<Ticker {self.symbol} {self.name} cls={self.corp_cls}>"
 
 
 class DailyPrice(Base):
@@ -126,9 +146,8 @@ class DailyPriceWithName(Base):
     symbol: Mapped[str] = mapped_column(String(10), primary_key=True)
     date: Mapped[date] = mapped_column(Date, primary_key=True)
     name: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    market: Mapped[str | None] = mapped_column(String(10), nullable=True)
-    sector: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    industry: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    corp_cls: Mapped[str | None] = mapped_column(String(1), nullable=True)
+    induty_code: Mapped[str | None] = mapped_column(String(10), nullable=True)
     open: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     high: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     low: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
@@ -596,24 +615,55 @@ class ModelPrediction(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
+
+class MinutePricePrediction(Base):
+    """분봉 가격 예측 결과. LightGBM per-symbol 모델 출력.
+
+    PK: (symbol, ts) — 같은 (종목, 타임스탬프) 재예측 시 upsert.
+    ts 는 KST timezone-aware TIMESTAMPTZ (hypertable 시간축).
+
+    Managed by migrations/020_minute_price_predictions.sql.
+    """
+    __tablename__ = "minute_price_predictions"
+
+    symbol: Mapped[str] = mapped_column(String(10), primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    predicted_return: Mapped[Decimal | None] = mapped_column(Numeric(12, 8), nullable=True)
+    predicted_close: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    prev_close: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    model_version: Mapped[str] = mapped_column(String(40), default="lgbm_v1")
+    feature_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
     def __repr__(self) -> str:
         return (
-            f"<ModelPrediction {self.model_run_id} {self.symbol} {self.date} "
-            f"pred={self.y_pred}>"
+            f"<MinutePricePrediction {self.symbol} {self.ts} "
+            f"ret={self.predicted_return} close={self.predicted_close}>"
         )
 
 
 class ModelFeatureImportance(Base):
-    """피처 중요도 (LightGBM gain/split 등).
+    """LightGBM / 등 모델의 피처 중요도.
 
     Managed by migrations/015_model_runs.sql.
     """
     __tablename__ = "model_feature_importance"
 
-    model_run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    model_run_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True,
+    )
     feature_name: Mapped[str] = mapped_column(String(50), primary_key=True)
-    importance_type: Mapped[str] = mapped_column(String(20), primary_key=True, default="gain")
-    importance: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    importance_type: Mapped[str] = mapped_column(
+        String(20), primary_key=True, default="gain",
+    )
+    importance: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 8), nullable=True,
+    )
     rank: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

@@ -41,6 +41,13 @@ from sqlalchemy import text
 from src.db.connection import get_engine, session_scope
 from src.utils.logger import logger
 
+_MARKET_TO_CORP_CLS: dict[str, str] = {
+    "KOSPI": "Y",
+    "KOSDAQ": "K",
+    "KONEX": "N",
+    "기타": "E",
+}
+
 # Canonical universe names. Anything else is rejected by get_universe.
 SUPPORTED_UNIVERSES = ("ALL", "KOSPI", "KOSDAQ", "KOSPI200")
 
@@ -56,8 +63,8 @@ def get_universe(
     Args:
         name: One of SUPPORTED_UNIVERSES (case-insensitive).
         as_of_date: Point-in-time anchor. A symbol is included only if
-                    listing_date <= as_of_date and (delisted_date IS NULL
-                    OR delisted_date > as_of_date).
+                    delisted_date IS NULL OR delisted_date > as_of_date.
+                    (listing_date 컬럼은 018 마이그레이션에서 제거됨)
         min_market_cap_krw: Optional market-cap floor in KRW. Applied
                            using daily_prices.market_cap from the closest
                            prior trading day (up to 7 days back). Useful
@@ -91,12 +98,13 @@ def get_universe(
     else:
         markets = [upper]
 
-    where = ["market = ANY(:markets)"]
-    params: dict = {"markets": markets, "asof": as_of_date}
+    corp_cls_values = [_MARKET_TO_CORP_CLS.get(m, m) for m in markets]
+    where = ["corp_cls = ANY(:corp_cls_values)"]
+    params: dict = {"corp_cls_values": corp_cls_values, "asof": as_of_date}
 
-    # listed-on-or-before as_of_date (NULL listing_date is kept for now)
-    where.append("(listing_date IS NULL OR listing_date <= :asof)")
-    # not yet delisted as of as_of_date
+    # listing_date 컬럼은 018 마이그레이션에서 제거됨.
+    # 상장일 필터는 daily_prices.MIN(date)로 파생할 수 있으나
+    # 현재는 survivorship 완화를 위해 생략하고 delisted_date만 사용.
     where.append(
         "(delisted = FALSE OR delisted_date IS NULL OR delisted_date > :asof)"
     )

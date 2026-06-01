@@ -19,11 +19,14 @@ from src.api.runners import (
     _build_factor_registry,
     submit_factor_eval,
     submit_factor_eval_all,
+    submit_minute_forecast,
 )
 from src.api.schemas import (
     FactorEvalAllRequest,
     FactorEvalRequest,
     JobAcceptedResponse,
+    MinuteForecastRequest,
+    MinuteForecastResponse,
 )
 
 router = APIRouter(
@@ -127,6 +130,80 @@ async def trigger_factor_eval(req: FactorEvalRequest) -> JobAcceptedResponse:
     except CollectorBusy as e:
         raise _busy_409(e) from e
     return _job_accepted(record)
+
+
+# ---------------------------------------------------------------------------
+# Minute-bar price forecast
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/minute-forecast",
+    response_model=MinuteForecastResponse,
+    summary="분봉 가격 예측 (LightGBM per-symbol)",
+)
+async def trigger_minute_forecast(
+    req: MinuteForecastRequest,
+) -> MinuteForecastResponse:
+    """LightGBM 모델로 특정 종목의 당일/익일 분봉 예측 생성.
+
+    실행 규칙:
+        - 08:00 KST **이전** 호출 → **당일** 09:00~15:30 (390분봉) 예측
+        - 08:00 KST **이후** 호출 → **다음 영업일** 09:00~15:30 예측
+        - 이미 같은 (symbol, ts)가 존재하면 upsert
+
+    입력 데이터:
+        - 직전 22거래일 분봉 (minute_prices 테이블)
+        - 일봉 모멘텀/편더멘털 (daily_prices)
+        - 공시 유무 (dart_disclosures)
+        - EPS/목표주가 콘센서스 (consensus_estimates)
+
+    예측 결과는 `minute_price_predictions` 테이블에 저장됩니다.
+    """
+    try:
+        record = await submit_minute_forecast(
+            symbol=req.symbol,
+            save_feature_snapshot=req.save_feature_snapshot,
+        )
+    except CollectorBusy as e:
+        raise _busy_409(e) from e
+
+    # 작업이 완료될 때까지 대기 (분봉 예측은 대개 1~5초 소요)
+    # _run_async_locked 담당 작업이 백그라운드에서 실행되므로,
+    # 완료를 기다려 결과를 직접 반환.
+    import asyncio as _asyncio
+    from src.api.jobs import get_registry
+
+    registry = get_registry()
+    for _ in range(120):  # 최대 60초 대기
+        job = await registry.get(record.id)
+        if job is None:
+            break
+        if job.status in ("success", "failed", "rejected"):
+            break
+        await _asyncio.sleep(0.5)
+
+    job = await registry.get(record.id)
+    if job is None or job.status != "success" or job.result is None:
+        error_msg = (job.error if job else None) or "unknown error"
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "symbol": req.symbol,
+                "error": error_msg,
+                "job_id": record.id,
+            },
+        )
+
+    r = job.result
+    return MinuteForecastResponse(
+        symbol=r["symbol"],
+        target_date=r["target_date"],
+        n_rows=r["n_rows"],
+        prev_close=r["prev_close"],
+        model_version=r["model_version"],
+        train_rows=r["train_rows"],
+    )
 
 
 @router.post(
