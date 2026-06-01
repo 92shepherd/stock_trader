@@ -81,12 +81,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 #         호스트 시각과 일치한다 (Asia/Seoul tz 자체는 zoneinfo로 들어옴).
 # curl: HEALTHCHECK 명령어용. /health 엔드포인트를 찌른다.
 # ca-certificates: HTTPS(KIS, DART, Yahoo) 호출에 필요.
+# libgomp1: LightGBM이 OpenMP 멀티스레딩에 사용하는 공유 라이브러리.
+#           builder 스테이지의 build-essential에는 포함되지만 slim runtime에는
+#           없어서 lightgbm import 시 OSError: libgomp.so.1 발생.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         tini \
         tzdata \
         curl \
         ca-certificates \
+        libgomp1 \
  && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
  && echo $TZ > /etc/timezone \
  && rm -rf /var/lib/apt/lists/*
