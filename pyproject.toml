@@ -36,6 +36,7 @@ dependencies = [
     # GBDT remains the strongest baseline on equity ranking tasks
     # (Qlib Alpha360 benchmarks); imported only by src/research/model_lgbm.py.
     "lightgbm>=4.3.0",
+    "scikit-learn>=1.4.0",
 ]
 
 [project.optional-dependencies]
