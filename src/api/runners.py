@@ -934,30 +934,62 @@ def _minute_forecast_all_blocking(
 
     _run_async_locked 가 이 함수를 asyncio.to_thread 로 돌리므로
     실제로는 별도 스레드에서 실행됨.
+
+    완료 후 결과 dict 의 total_rows / sample_errors 로 실제 저장 여부와
+    실패 원인을 확인할 수 있다. 전폭 실패(n_ok=0) 이면 상위에서
+    이상을 감지할 수 있도록 요약을 명확히 남긴다.
     """
     from src.research.minute_forecast import run_minute_forecast
 
     ok: list[str] = []
     failed: dict[str, str] = {}
+    total_rows = 0
 
-    for symbol in symbols:
+    total = len(symbols)
+    logger.info(f"[minute_forecast_all] 시작: {total}개 종목")
+
+    for idx, symbol in enumerate(symbols, start=1):
         try:
-            run_minute_forecast(
+            result = run_minute_forecast(
                 symbol,
                 save_feature_snapshot=save_feature_snapshot,
             )
             ok.append(symbol)
+            total_rows += int(result.get("n_rows", 0) or 0)
         except Exception as e:  # noqa: BLE001
             failed[symbol] = str(e)[:200]
             logger.warning(f"[minute_forecast_all] {symbol} 실패: {e}")
 
-    return {
-        "total": len(symbols),
+        # 진행 로깅 (100개마다)
+        if idx % 100 == 0:
+            logger.info(
+                f"[minute_forecast_all] 진행 {idx}/{total} — "
+                f"ok={len(ok)}, failed={len(failed)}, rows={total_rows}"
+            )
+
+    # 실패 사유별 집계 (동일 에러 메시지가 수천 개 쌓이는 것 방지)
+    error_counts: dict[str, int] = {}
+    for msg in failed.values():
+        error_counts[msg] = error_counts.get(msg, 0) + 1
+    # 빈도 상위 5개만
+    top_errors = dict(
+        sorted(error_counts.items(), key=lambda kv: -kv[1])[:5]
+    )
+
+    summary = {
+        "total": total,
         "n_ok": len(ok),
         "n_failed": len(failed),
-        "ok": ok,
-        "failed": failed,
+        "total_rows": total_rows,
+        "sample_ok": ok[:10],
+        "error_counts": top_errors,
     }
+    logger.success(
+        f"[minute_forecast_all] 완료 — "
+        f"ok={len(ok)}/{total}, rows={total_rows}, "
+        f"top_errors={top_errors}"
+    )
+    return summary
 
 
 async def submit_minute_forecast_all(
@@ -972,12 +1004,31 @@ async def submit_minute_forecast_all(
     MINUTE_FORECAST 락 하나를 전체 진행에 대해 유지하므로
     실행 중 수동 API 호출은 409를 반환함.
     """
-    from src.db.repositories import get_active_tickers
-
+    # get_active_tickers 는 블로킹 DB 호출이므로 to_thread 에서 실행
     if symbols is None:
+        from src.db.repositories import get_active_tickers
         effective_markets = markets or ["KOSPI", "KOSDAQ"]
-        tickers = get_active_tickers(markets=effective_markets)
+        tickers = await asyncio.to_thread(
+            get_active_tickers, effective_markets
+        )
         symbols = [t.symbol for t in tickers]
+
+        # corp_cls 가 아직 채워지지 않은 tickers 테이블이면 market 필터가
+        # 0건을 반환할 수 있다. 그 경우 필터 없이 재시도.
+        if not symbols and markets is None:
+            logger.warning(
+                "[minute_forecast_all] market 필터 0건 — "
+                "corp_cls 미설정 가능성. 필터 없이 재시도."
+            )
+            all_tickers = await asyncio.to_thread(get_active_tickers, None)
+            symbols = [t.symbol for t in all_tickers]
+
+    if not symbols:
+        raise ValueError(
+            "예측 대상 종목이 0개입니다. tickers 테이블이 비었거나 "
+            "corp_cls 가 칄워지지 않았을 수 있습니다. "
+            "tickers 수집(refresh_tickers_from_dart) 상태를 확인하세요."
+        )
 
     params: dict[str, Any] = {
         "symbols": symbols,
