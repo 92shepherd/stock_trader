@@ -404,3 +404,143 @@ def collect_latest_bars(
         "n_failed": n_failed,
         "skipped_market_closed": False,
     }
+
+
+def collect_today_bars(
+    symbols: list[str],
+    *,
+    require_market_open: bool = True,
+    request_delay: float | None = None,
+) -> dict[str, Any]:
+    """장중 주기 수집 — 종목별 '당일 전체' 분봉을 페이징 수집해 upsert.
+
+    collect_latest_bars 는 호출당 최근 ~30봉만 가져와 주기가 길면(예:
+    1시간) 봉 공백이 생긴다. 이 함수는 각 종목에 대해 collect_one_day(오늘)
+    로 당일 09:00~현재까지 전체 분봉을 페이징 수집한다. upsert 가 멱등
+    (ON CONFLICT)이라 매 주기 당일 전체를 다시 긁어도 중복 없이 채워진다.
+
+    비용: 종목당 ~13콜(당일 페이징)로 collect_latest_bars(1콜/종목)보다
+    호출량이 많다. 관심종목(수십 개) 단위 사용 권장. 종목 간 간격은
+    fetch_day 내부의 페이지별 sleep 으로 자연히 확보된다.
+
+    장외(09:00~15:30 KST 이외)에는 즉시 스킵(skipped_market_closed=True).
+    require_market_open=False 면 이 게이트를 무시한다(마감 후 1회 최종
+    수집용 — 당일 전체를 다시 긁어 마지막 ~30분 tail 까지 채운다).
+
+    Returns:
+        {total_rows, n_symbols, n_ok, n_failed, skipped_market_closed}
+        (collect_latest_bars 와 동일 스키마 — 스케줄러 로깅 호환)
+    """
+    from zoneinfo import ZoneInfo
+
+    from src.kis.market_status import is_market_open
+
+    if require_market_open and not is_market_open():
+        return {
+            "total_rows": 0,
+            "n_symbols": len(symbols),
+            "n_ok": 0,
+            "n_failed": 0,
+            "skipped_market_closed": True,
+        }
+
+    if request_delay is None:
+        mode = get_kis_auth().mode
+        request_delay = _DEFAULT_DELAY_BY_MODE.get(mode, 0.4)
+
+    today = datetime.now(ZoneInfo("Asia/Seoul")).date()
+    total_rows = 0
+    n_ok = 0
+    n_failed = 0
+
+    for symbol in symbols:
+        try:
+            rows = collect_one_day(symbol, today, request_delay=request_delay)
+            total_rows += rows
+            n_ok += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[minute_today] {symbol} failed: {e}")
+            n_failed += 1
+
+    logger.debug(
+        f"[minute_today] rows={total_rows} ok={n_ok} failed={n_failed} "
+        f"symbols={len(symbols)}"
+    )
+    return {
+        "total_rows": total_rows,
+        "n_symbols": len(symbols),
+        "n_ok": n_ok,
+        "n_failed": n_failed,
+        "skipped_market_closed": False,
+    }
+
+
+def collect_recent_window(
+    symbols: list[str],
+    *,
+    lookback_minutes: int = 120,
+    request_delay: float | None = None,
+) -> dict[str, Any]:
+    """장중 주기 수집 — 종목별 '최근 lookback_minutes 분'(기본 120=2시간) 롤링 수집.
+
+    주기보다 긴 lookback 으로 매 호출을 직전 구간과 겹치게 하면, 타이밍
+    지터가 있어도 봉 공백이 생기지 않는다(예: 60분 주기 + 120분 lookback
+    → 매 호출 1시간 중복). upsert 멱등(ON CONFLICT)이라 중복은 흡수된다.
+
+    비용: 종목당 ceil(lookback/30) 콜(120분→~4콜)로 collect_today_bars
+    (당일 전체, ~13콜)보다 가볍다 → paper 모드에서도 부담이 적다.
+
+    종목 간 간격은 fetch_recent 내부 페이지별 sleep 으로 확보.
+    장외(09:00~15:30 KST 이외)에는 즉시 스킵.
+
+    Returns:
+        {total_rows, n_symbols, n_ok, n_failed, skipped_market_closed}
+        (collect_latest_bars/collect_today_bars 와 동일 스키마)
+    """
+    from src.kis.market_status import is_market_open
+
+    if not is_market_open():
+        return {
+            "total_rows": 0,
+            "n_symbols": len(symbols),
+            "n_ok": 0,
+            "n_failed": 0,
+            "skipped_market_closed": True,
+        }
+
+    if request_delay is None:
+        mode = get_kis_auth().mode
+        request_delay = _DEFAULT_DELAY_BY_MODE.get(mode, 0.4)
+
+    kis_minute = get_kis_minute()
+    total_rows = 0
+    n_ok = 0
+    n_failed = 0
+
+    for symbol in symbols:
+        try:
+            bars = kis_minute.fetch_recent(
+                symbol,
+                lookback_minutes=lookback_minutes,
+                request_delay=request_delay,
+            )
+            if bars:
+                df = _bars_to_df(symbol, bars)
+                if not df.empty:
+                    total_rows += upsert_minute_prices(df)
+            n_ok += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[minute_recent] {symbol} failed: {e}")
+            n_failed += 1
+
+    logger.debug(
+        f"[minute_recent] rows={total_rows} ok={n_ok} failed={n_failed} "
+        f"symbols={len(symbols)} lookback={lookback_minutes}m"
+    )
+    return {
+        "total_rows": total_rows,
+        "n_symbols": len(symbols),
+        "n_ok": n_ok,
+        "n_failed": n_failed,
+        "skipped_market_closed": False,
+    }

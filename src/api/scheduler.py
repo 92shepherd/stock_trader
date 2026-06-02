@@ -54,6 +54,7 @@ JOB_ID_DAILY_CRON = "daily_kis_dart_cron"
 JOB_ID_HANKYUNG_CRON = "daily_hankyung_cron"
 JOB_ID_FACTOR_EVAL_CRON = "weekly_factor_eval_cron"
 JOB_ID_MINUTE_REALTIME = "minute_realtime_cron"
+JOB_ID_MINUTE_CLOSE_SWEEP = "minute_close_sweep_cron"
 JOB_ID_MINUTE_FORECAST_CRON = "daily_minute_forecast_cron"
 
 
@@ -133,6 +134,35 @@ def _minute_realtime_symbols() -> list[str] | None:
     if not raw:
         return None
     return [s.strip().zfill(6) for s in raw.split(",") if s.strip()]
+
+
+def _minute_realtime_interval_minutes() -> int:
+    """MINUTE_REALTIME_INTERVAL_MINUTES 환경변수. 기본 60분(= 1시간 주기).
+
+    분봉 수집 잡의 발화 주기(분). 예전엔 1분 주기였지만, 전체
+    유니버스 기준 KIS rate limit 으로 한 tick 이 1분을 크게 넘겨
+    1분 주기가 의미 없으므로 기본을 60분으로 둔다.
+    1 미만/비정상 값은 60으로 폴백.
+    """
+    raw = os.getenv("MINUTE_REALTIME_INTERVAL_MINUTES", "60").strip()
+    try:
+        val = int(raw)
+    except ValueError:
+        return 60
+    return val if val >= 1 else 60
+
+
+def _minute_close_sweep_cron_expression() -> str:
+    """SCHEDULER_MINUTE_CLOSE_SWEEP_CRON 환경변수. 기본: 평일 15:40 KST.
+
+    장 마감(15:30) 직후 1회 — 주기 수집이 is_market_open 게이트로
+    놓친 마감 직전 구간(~15:00~15:30)을 당일 전체 재수집으로 메운다.
+    15:40 은 마감동시호가/마지막 봉(15:30) 확정 이후로 여유를 둔 값.
+    """
+    return (
+        os.getenv("SCHEDULER_MINUTE_CLOSE_SWEEP_CRON", "40 15 * * 1-5").strip()
+        or "40 15 * * 1-5"
+    )
 
 
 def _minute_forecast_enabled() -> bool:
@@ -345,20 +375,28 @@ async def _scheduled_minute_forecast_cron() -> None:
 
 
 async def _scheduled_minute_realtime() -> None:
-    """매분 실행 — 장중 최신 1분봉 수집.
+    """주기 실행 — 장중 최신 1분봉 수집.
 
     MINUTE_REALTIME_ENABLED=true 일 때만 register_default_jobs() 에서 등록됨.
+    발화 주기는 MINUTE_REALTIME_INTERVAL_MINUTES (기본 60분 = 1시간).
     장외 시간(주말 포함 09:00~15:35 KST 이외)에는 collect_latest_bars 내부에서
-    즉시 스킵하므로 스케줄러 자체는 항상 매분 발화해도 무방.
+    즉시 스킵하므로 스케줄러 자체는 항상 주기대로 발화해도 무방.
 
     MINUTE_REALTIME_SYMBOLS 가 설정된 경우 해당 종목만, 미설정 시 전체 활성 종목.
-    수집 결과는 DEBUG 레벨로만 기록 (분당 로그 범람 방지).
+
+    수집은 collect_recent_window 로 종목별 '최근 2시간(= 주기 × 2)' 롤링
+    윈도우를 가져온다. 주기(기본 1시간)보다 lookback(2시간)이 길어 매
+    호출이 직전 구간과 1주기씩 겹치므로, 타이밍 지터가 있어도 봉 공백이
+    없다. upsert 멱등이라 겹치는 구간은 중복 없이 흡수된다. 당일 전체
+    (~13콜) 대신 ~4콜/종목이라 paper 모드에서도 가볍다.
+    단, is_market_open 게이트상 마감(15:30) 직전 마지막 구간은 마감 이후
+    tick 이 스킵되어 누락될 수 있다(필요 시 마감 후 1회 수집/EOD 보완).
 
     MINUTE_KIS 백필 잡이 실행 중이면 이번 tick 을 스킵한다.
-    (백필과 실시간이 동시에 KIS API 를 호출하면 rate limit 이 겹침)
+    (백필과 수집이 동시에 KIS API 를 호출하면 rate limit 이 겹침)
     """
     from src.api.locks import CollectorName, is_locally_busy
-    from src.collectors.minute_kis import collect_latest_bars
+    from src.collectors.minute_kis import collect_recent_window
     from src.config import get_app_config
     from src.db.repositories import get_active_tickers
 
@@ -375,8 +413,13 @@ async def _scheduled_minute_realtime() -> None:
     if not symbols:
         return
 
+    # lookback = 주기 × 2 → 매 호출이 직전 구간과 1주기만큼 겹쳐 공백 방지.
+    # 기본 60분 주기에서는 정확히 '최근 2시간' 이 된다.
+    lookback_min = _minute_realtime_interval_minutes() * 2
     try:
-        result = await asyncio.to_thread(collect_latest_bars, symbols)
+        result = await asyncio.to_thread(
+            collect_recent_window, symbols, lookback_minutes=lookback_min
+        )
         if result.get("skipped_market_closed"):
             logger.info(
                 f"[minute_realtime] skipped — market closed "
@@ -390,6 +433,49 @@ async def _scheduled_minute_realtime() -> None:
             )
     except Exception as e:  # noqa: BLE001
         logger.exception(f"[minute_realtime] job error: {e}")
+
+
+async def _scheduled_minute_close_sweep() -> None:
+    """마감 후 1회 — 당일 분봉 최종 수집(tail 보완).
+
+    MINUTE_REALTIME_ENABLED=true 일 때만 register_default_jobs() 에서
+    등록됨(주기 수집과 한 세트). 기본 평일 15:40 KST.
+
+    주기 수집(_scheduled_minute_realtime)은 is_market_open 게이트상
+    마감(15:30) 이후 tick 이 스킵되어 마지막 ~30분(예: 15:00~15:30)을
+    놓친다. 이 잡은 마감 직후 require_market_open=False 로 당일 전체
+    (09:00~15:30)를 다시 수집해 그 공백을 메운다. upsert 멱등이라
+    중복 없이 채워진다.
+    """
+    from src.api.locks import CollectorName, is_locally_busy
+    from src.collectors.minute_kis import collect_today_bars
+    from src.config import get_app_config
+    from src.db.repositories import get_active_tickers
+
+    if is_locally_busy(CollectorName.MINUTE_KIS):
+        logger.info("[minute_close] skipped — minute_kis backfill is running")
+        return
+
+    symbols = _minute_realtime_symbols()
+    if symbols is None:
+        cfg = get_app_config()
+        tickers = get_active_tickers(markets=cfg.markets)
+        symbols = [t.symbol for t in tickers]
+
+    if not symbols:
+        return
+
+    try:
+        result = await asyncio.to_thread(
+            collect_today_bars, symbols, require_market_open=False
+        )
+        logger.info(
+            f"[minute_close] rows={result['total_rows']} "
+            f"ok={result['n_ok']} failed={result['n_failed']} "
+            f"symbols={result['n_symbols']}"
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"[minute_close] job error: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -484,20 +570,53 @@ def register_default_jobs(scheduler: AsyncIOScheduler) -> list[dict[str, Any]]:
         symbol_desc = (
             f"{len(minute_symbols)}개 종목" if minute_symbols else "전체 활성 종목"
         )
+        interval_min = _minute_realtime_interval_minutes()
+        # misfire_grace_time 을 주기에 비례해 넓게(주기의 절반, 단 최소
+        # 30초) 둔다. 시간 단위 주기에서 고정 30초 유예는 이벤트
+        # 루프가 발화 시점에 잠깐 바쁨 면 그 주기를 통째 건너뛰어
+        # 손실이 크므로, 주기가 길수록 여유를 키운다.
+        misfire = max(30, interval_min * 60 // 2)
         scheduler.add_job(
             _scheduled_minute_realtime,
-            trigger=IntervalTrigger(minutes=1, timezone=_timezone_name()),
+            trigger=IntervalTrigger(
+                minutes=interval_min, timezone=_timezone_name()
+            ),
             id=JOB_ID_MINUTE_REALTIME,
-            name=f"분봉 실시간 수집 ({symbol_desc}, 장중 09:00~15:35 KST)",
+            name=(
+                f"분봉 수집 ({symbol_desc}, {interval_min}분 주기, "
+                f"장중 09:00~15:35 KST)"
+            ),
             replace_existing=True,
             coalesce=True,
             max_instances=1,
-            misfire_grace_time=30,
+            misfire_grace_time=misfire,
         )
-        registered.append({"id": JOB_ID_MINUTE_REALTIME, "interval": "1min"})
+        registered.append(
+            {"id": JOB_ID_MINUTE_REALTIME, "interval": f"{interval_min}min"}
+        )
         logger.info(
-            f"[scheduler] minute realtime registered — {symbol_desc} "
+            f"[scheduler] minute collect registered — {symbol_desc}, "
+            f"interval={interval_min}min "
             f"(MINUTE_REALTIME_SYMBOLS={'set' if minute_symbols else 'unset=all'})"
+        )
+
+        # 마감 후 1회 최종 수집 (tail 보완) — 주기 수집과 한 세트로 등록
+        close_cron = _minute_close_sweep_cron_expression()
+        scheduler.add_job(
+            _scheduled_minute_close_sweep,
+            trigger=CronTrigger.from_crontab(
+                close_cron, timezone=_timezone_name()
+            ),
+            id=JOB_ID_MINUTE_CLOSE_SWEEP,
+            name=f"분봉 마감 후 최종 수집 ({symbol_desc}, cron={close_cron})",
+            replace_existing=True,
+        )
+        registered.append(
+            {"id": JOB_ID_MINUTE_CLOSE_SWEEP, "cron": close_cron}
+        )
+        logger.info(
+            f"[scheduler] minute close-sweep registered — {symbol_desc}, "
+            f"cron={close_cron!r}"
         )
     else:
         logger.info(
@@ -587,6 +706,7 @@ __all__ = [
     "JOB_ID_HANKYUNG_CRON",
     "JOB_ID_FACTOR_EVAL_CRON",
     "JOB_ID_MINUTE_REALTIME",
+    "JOB_ID_MINUTE_CLOSE_SWEEP",
     "JOB_ID_MINUTE_FORECAST_CRON",
     "build_scheduler",
     "register_default_jobs",

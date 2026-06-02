@@ -227,6 +227,76 @@ class KISMinute:
         )
         return bars
 
+    def fetch_recent(
+        self,
+        symbol: str,
+        *,
+        lookback_minutes: int = 120,
+        request_delay: float = 0.07,
+    ) -> list[dict[str, Any]]:
+        """현재 KST 시각 기준 최근 lookback_minutes 분의 당일 1분봉 반환.
+
+        fetch_latest(단일 호출, 최근 ~30봉)과 fetch_day(당일 전체) 사이.
+        cursor=현재 시각부터 역방향으로, 윈도우 하한(now - lookback,
+        단 09:00 미만이면 09:00)에 도달할 때까지만 페이징한다.
+        주기적 수집에서 '주기 < lookback' 으로 겹치게 호출하면 봉 공백을
+        남기지 않는다(예: 60분 주기 + 120분 lookback → 매 호출 1시간 중복).
+
+        호출 수: ceil(lookback_minutes / 30) (예: 120분 → 최대 ~4콜).
+        당일만 대상(날짜 경계 이전은 수집하지 않음).
+        request_delay 는 페이지별 sleep 으로 적용(종목 간 간격 자연 확보).
+
+        Returns:
+            시간 오름차순 당일 bar list. 장외/데이터 없으면 빈 리스트.
+        """
+        from zoneinfo import ZoneInfo
+
+        now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+        today_str = now_kst.strftime("%Y%m%d")
+        cursor = now_kst.strftime("%H%M%S")
+
+        start_dt = now_kst - timedelta(minutes=lookback_minutes)
+        if start_dt.date() < now_kst.date():
+            start_str = MARKET_OPEN_STR
+        else:
+            start_str = max(start_dt.strftime("%H%M%S"), MARKET_OPEN_STR)
+
+        all_bars: list[dict[str, Any]] = []
+        while True:
+            page = self._call(symbol, cursor)
+            time.sleep(request_delay)
+
+            if not page:
+                break
+
+            # 당일 + 윈도우 하한 이상 봉만 수집
+            for b in page:
+                if (
+                    b.get("stck_bsop_date") == today_str
+                    and b.get("stck_cntg_hour", "") >= start_str
+                ):
+                    all_bars.append(b)
+
+            oldest_date_str = page[-1].get("stck_bsop_date", "")
+            oldest_hour_str = page[-1].get("stck_cntg_hour", "")
+
+            # 전일로 넘어갔으면 완료(당일 윈도우만 대상)
+            if oldest_date_str and oldest_date_str < today_str:
+                break
+            # 윈도우 하한(≥ 09:00)에 도달했으면 완료
+            if oldest_date_str == today_str and oldest_hour_str <= start_str:
+                break
+
+            next_cursor = self._prev_minute(oldest_hour_str)
+            if next_cursor is None:
+                break
+            cursor = next_cursor
+
+        all_bars.sort(
+            key=lambda b: (b.get("stck_bsop_date", ""), b.get("stck_cntg_hour", ""))
+        )
+        return all_bars
+
 
 # ---------------------------------------------------------------------------
 # Module-level singleton
