@@ -846,6 +846,38 @@ def upsert_minute_prices(df: pd.DataFrame) -> int:
     return affected
 
 
+def query_minute_prices(
+    symbol: str,
+    ts_start: "datetime",
+    ts_end: "datetime",
+) -> pd.DataFrame:
+    """특정 종목의 [ts_start, ts_end] 실측 1분봉 OHLCV 조회.
+
+    예측값을 읽는 ``query_minute_price_predictions`` 와 동일한 시그니처
+    (ts 포함 양끝, 오름차순 정렬) 를 갖도록 대칭으로 설계.
+
+    Args:
+        symbol: 6자리 KRX 종목코드.
+        ts_start: 조회 시작 시각 (timezone-aware 권장, KST).
+        ts_end: 조회 종료 시각 (양끝 포함, timezone-aware 권장, KST).
+
+    Returns:
+        DataFrame [symbol, ts, open, high, low, close, volume, value],
+        ts 오름차순 정렬. 데이터가 없으면 빈 DataFrame.
+    """
+    sql = text(
+        "SELECT symbol, ts, open, high, low, close, volume, value "
+        "FROM minute_prices "
+        "WHERE symbol = :sym AND ts >= :s AND ts <= :e "
+        "ORDER BY ts"
+    )
+    with get_engine().connect() as conn:
+        return pd.read_sql(
+            sql, conn,
+            params={"sym": symbol, "s": ts_start, "e": ts_end},
+        )
+
+
 # -------------------- Collection log --------------------
 
 def log_collection(

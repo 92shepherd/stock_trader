@@ -548,6 +548,71 @@ class MinuteForecastResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Data query (read-only) — 분봉 조회 / 분봉 예측 조회
+# ---------------------------------------------------------------------------
+#
+# 수집/평가 트리거 계열(POST)과 달리, 이미 적재된 데이터를 그대로
+# 읽어 반환하는 동기 GET 응답 모델들. ts 는 KST 기준 ISO-8601 문자열로
+# 직렬화된다 (예: '2026-06-01T09:00:00+09:00').
+
+
+class MinuteBar(BaseModel):
+    """실측 1분봉 OHLCV 한 줄."""
+
+    ts: str = Field(..., description="분봉 타임스탬프 (KST ISO-8601).")
+    open: float | None = Field(None, description="시가(원).")
+    high: float | None = Field(None, description="고가(원).")
+    low: float | None = Field(None, description="저가(원).")
+    close: float | None = Field(None, description="종가(원).")
+    volume: int | None = Field(None, description="거래량(주).")
+    value: int | None = Field(None, description="거래대금(원).")
+
+
+class MinutePricesQueryResponse(BaseModel):
+    """GET /query/minute/prices 응답 — 실측 분봉 조회 결과."""
+
+    symbol: str = Field(..., description="6자리 KRX 종목코드.")
+    date: str = Field(..., description="조회 날짜 (YYYY-MM-DD, KST).")
+    count: int = Field(..., description="반환된 분봉 수.")
+    bars: list[MinuteBar] = Field(
+        default_factory=list,
+        description="ts 오름차순 분봉 OHLCV 목록. 데이터가 없으면 빈 배열.",
+    )
+
+
+class MinutePrediction(BaseModel):
+    """분봉 예측값 한 줄."""
+
+    ts: str = Field(..., description="예측 대상 분봉 타임스탬프 (KST ISO-8601).")
+    predicted_return: float | None = Field(
+        None, description="전일 종가 대비 예측 수익률. 예: 0.01234 = +1.234%."
+    )
+    predicted_close: float | None = Field(
+        None, description="예측 종가(원). prev_close × (1 + predicted_return)."
+    )
+    prev_close: float | None = Field(
+        None, description="역변환 기준이 된 전일 종가(원)."
+    )
+    model_version: str = Field(..., description="예측에 사용된 모델 버전 식별자.")
+
+
+class MinutePredictionsQueryResponse(BaseModel):
+    """GET /query/minute/predictions 응답 — 분봉 예측값 조회 결과."""
+
+    symbol: str = Field(..., description="6자리 KRX 종목코드.")
+    date: str = Field(..., description="조회 날짜 (YYYY-MM-DD, KST).")
+    count: int = Field(..., description="반환된 예측 포인트 수 (정상 완전그래프: 390).")
+    model_version: str | None = Field(
+        None,
+        description="조회된 예측의 모델 버전. 데이터가 없으면 None.",
+    )
+    predictions: list[MinutePrediction] = Field(
+        default_factory=list,
+        description="ts 오름차순 예측값 목록. 데이터가 없으면 빈 배열.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Scheduler management
 # ---------------------------------------------------------------------------
 
